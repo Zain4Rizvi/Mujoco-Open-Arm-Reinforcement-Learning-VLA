@@ -14,4 +14,4 @@ A scripted expert currently performs the throwing task. The same simulation is c
 
 ## Expert Demonstration
 
-![Successful expert throw](artifacts/readme%20artifacts/Wrong%20Bucket.gif)
+![Successful expert throw](assets/Wrong%20Bucket.gif)
