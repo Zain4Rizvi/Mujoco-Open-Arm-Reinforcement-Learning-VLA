@@ -1,0 +1,9 @@
+n_episodes: 50
+seed: 1000
+video_dir: artifacts/eval
+match_seeds: false
+policy: expert
+checkpoint: ""
+backend: smolvla
+chunk_horizon: 16
+replan_every: 8

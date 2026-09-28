@@ -1,0 +1,5 @@
+n_success: 500
+max_attempts: 2000
+out_dir: data/datasets/openarm_throw
+image_size: 256
+seed: 0

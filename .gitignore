@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+artifacts/
+data/datasets/
+checkpoints/
+wandb/
+*.egg-info/
+.uv/
+uv.lock.bak

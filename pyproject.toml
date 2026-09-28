@@ -1,11 +1,34 @@
 [project]
 name = "open-arm-folding"
 version = "0.1.0"
-description = "Add your description here"
+description = "OpenArm throw env, scripted expert, and VLA fine-tuning pipeline"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "mujoco>=3.14.0",
     "numpy>=2.2.6",
     "scipy>=1.15.3",
+    "gymnasium>=0.29.0",
+    "pyyaml>=6.0",
+    "imageio>=2.34.0",
+    "imageio-ffmpeg>=0.5.0",
+    "pytest>=8.0",
 ]
+
+[project.optional-dependencies]
+train = [
+    "torch",
+    "lerobot",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["openarm_vla"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+

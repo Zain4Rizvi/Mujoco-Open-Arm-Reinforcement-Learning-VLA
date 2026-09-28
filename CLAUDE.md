@@ -1,0 +1,242 @@
+# CLAUDE.md
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+# Project: OpenArm VLA throw pipeline
+
+Read this whole section before touching code. It supersedes `AGENT_HANDOFF.md` where they disagree.
+
+## Goal
+
+Given an instruction like "throw the red ball into the blue bucket", a LoRA-fine-tuned VLA drives the
+**right** OpenArm (MuJoCo) to grasp the named ball and throw it into the named floor bin.
+
+Pipeline: Gymnasium env -> scripted expert -> LeRobot-style demo dataset -> VLA fine-tune (SmolVLA default,
+pi0/openpi optional) -> closed-loop eval.
+
+The approved plan lives at `c:\Users\black\.cursor\plans\vla_throw_pipeline_bce6bacc.plan.md`.
+**Do not edit that plan file.** Its todos (`phase0-env`, `phase1-expert`, `phase2-data`, `phase3-train`,
+`phase4-eval`, `docs`) already exist: mark them in progress or completed, never recreate them.
+
+## Hard constraints (from the user and the plan)
+
+- **Do not change** `main.py` (passive viewer; it does not apply the `home` keyframe, intentionally),
+  actuator gains, or scene physics in `v2/`.
+- Scene colors (bin walls, ball colors) are changed **in Python at reset**, not by editing MJCF.
+- Right arm only; the left arm is held at `home` ctrl every step.
+- Do not claim a trained policy exists unless a checkpoint exists.
+
+## Status (last updated 2026-09-28)
+
+| Phase | State | Evidence |
+|---|---|---|
+| 0 Env | **Done** | `uv run python -m pytest -v`: 7/7 pass; `artifacts/phase0_rgb.png` (front and wrist cameras side by side) |
+| 1 Expert | **In progress, ~62% success** (target 85%) | 40-seed headless probe: 25 success, 10 missed, 4 never_grasped, 1 wrong_bucket. `eval_expert.py --n-episodes 100` not yet run on the current code |
+| 2 Dataset | Not started | Writer and scripts exist but are unverified against the current env |
+| 3 Train | Not started | `train_smolvla.py` / `train_openpi.py` are dry-run stubs |
+| 4 Eval | Not started | `eval_policy.py` exists, unverified |
+| Docs | Not started | `PLAN.md` and `README.md` are required deliverables and are still missing (`README.md` is empty) |
+
+Nothing is committed yet (only the initial "Created Repository" commit exists).
+
+## How to run
+
+```powershell
+cd "Z:\1 Github Projects\Robotics\Open Arm Folding"
+$env:MUJOCO_GL = "glfw"          # Windows offscreen GL. Linux: egl or osmesa
+uv sync                          # installs openarm_vla in editable mode (hatchling)
+
+uv run python -m pytest -v                                                   # env + dataset tests
+uv run python scripts/eval_expert.py --n-episodes 20 --video-dir artifacts/expert
+uv run python artifacts/probe.py 40                                          # fast headless expert check
+```
+
+Always run from the **repo root**. `video_dir` / `out` paths are relative, so running from `scripts/`
+writes to `scripts/artifacts/...`. Videos from such a run exist there now and may predate the current code.
+
+## Codebase map
+
+```
+main.py                         passive viewer (do not change)
+v2/pedestal/throw_multi_scene.xml   the scene: 5 balls on a side table, 5 floor bins, inactive welds grasp_right_{color}
+openarm_vla/
+  constants.py                  joint/actuator names, colors, gripper constants, GRASP_OFFSET, dims
+  config.py                     EnvConfig dataclass + load_yaml
+  env/throw_env.py              ThrowEnv (Gymnasium): reset randomization, physics_step + grasp assist, obs, sim-state save/restore
+  env/success.py                ball_in_bin, EpisodeTracker, FailureMode taxonomy
+  expert/ik.py                  6-D damped-least-squares IK on a body-fixed point; jacobian_velocity
+  expert/ballistic.py           release_velocity (closed-form projectile), quintic_interp
+  expert/throw_expert.py        ThrowExpert: open-loop FSM plan + shooting-method aim correction
+  data/lerobot_writer.py        npz + mp4 + meta/info.json (NOT real LeRobot parquet yet)
+  policies/base.py              Policy protocol: predict_chunk(obs) -> (T, 8)
+  policies/dummy.py             DummyPolicy (hold pose, gripper open), ExpertPolicy wrapper
+  policies/smolvla.py           SmolVLAAdapter (lerobot import path is a guess; pin to installed version)
+  policies/openpi_pi0.py        OpenPiAdapter (raises NotImplementedError after import)
+scripts/                        eval_expert, collect_demos, dataset_stats, viz_episode, eval_policy, train_smolvla, train_openpi
+configs/                        env.yaml, expert.yaml, dataset.yaml, train_smolvla.yaml, eval.yaml
+tests/                          test_env.py, test_dataset.py
+artifacts/                      gitignored outputs + throwaway diagnostic scripts (see below)
+```
+
+## Interfaces (locked)
+
+- Control: **50 Hz**, 20 physics substeps, dt = 0.001.
+- Action (8): absolute position targets for right joints 1-7 + `right_finger1_ctrl`, clipped to ctrlrange.
+- State (15): right arm qpos (7) + qvel (7) + finger joint qpos (1).
+- Obs: `image_front` (`frontcam`), `image_wrist` (`camera_wrist_right`), both 256x256 RGB; `state`; `instruction` string.
+- Success: target ball COM inside the target bin's inner box for 0.5 s. Failures: `never_grasped`,
+  `dropped_during_grasp`, `missed`, `wrong_bucket`, `timeout`.
+- VLA inference: physics paused during `predict_chunk`; chunk 16, replan every 8.
+
+## Decisions taken (and why)
+
+1. **The grasp weld lives in the env, not the expert (deviates from AGENT_HANDOFF.md).** `ThrowEnv.physics_step`
+   runs a "grasp assist":
+   - gripper commanded closed (`action[7] > GRIP_CLOSE_CMD`) **and** fingers still physically open **and**
+     a ball COM within `GRASP_RADIUS` (4 cm) of the grasp point: weld that ball at its *current* relative pose
+     (`set_weld` writes `eq_data` relpos/relquat).
+   - gripper commanded open: release. The ball keeps the hand's real velocity.
+
+   The handoff's version (expert toggles the weld and writes the release velocity into the ball's `qvel`) would be
+   unavailable to a VLA at eval time, so demos and eval would not match. **No velocity is injected anymore.**
+   `dropped_during_grasp` is effectively unreachable now (a weld never slips).
+2. **Gripper polarity:** finger joint `0` = closed (tips ~9 mm apart), `-0.7854` = fully open (~15 cm).
+   The original scaffold had this inverted.
+3. **Grasp point** = `openarm_right_ee_base_link` origin + (0, 0, -0.145) in the EE frame. Measured from the
+   collision meshes: the palm collider reaches z = -0.111, the fingertips are inward hooks ending at ~-0.155, and the
+   open finger gap is only wider than the ball below ~-0.115. The approach must be **fully open** (a partial
+   opening leaves the hooks narrower than the 6 cm ball).
+4. **Only the grasp welds are disabled at reset.** Disabling all equalities also killed the finger mimic joint,
+   so the outer finger never opened.
+5. **Ball placement is rejection-sampled** until no ball touches anything but the table (the jitter could overlap
+   balls, and the `home` wrist sits next to the ball set).
+6. **Expert plan** (`throw_expert.py`), all segments quintic and sampled exactly at 50 Hz:
+   1. home, with the elbow (joint 4) raised to 2.4 first (a direct path sweeps the balls)
+   2. `throw_ready`, gripper closed during transit
+   3. hover (open)
+   4. descend
+   5. close for 10 ticks
+   6. lift
+   7. wind-up
+   8. throw, ending at `q_rel` with joint velocity `qd = J^+ v`
+   9. release on the first follow-through tick
+   10. hold
+7. **Wrist yaw per episode.** Grasp yaw maximizes finger clearance from neighbor balls; throw yaw points the
+   gripper's open side (local ±x) along the throw heading so the ball does not leave through a finger. Each IK chain
+   restarts from `throw_ready` and tries candidate yaws until the position residual is < 5 mm.
+8. **Aiming by shooting.** MuJoCo is deterministic, so the expert simulates the pre-throw part once, snapshots
+   (`get_sim_state` / `set_sim_state`, `mjSTATE_INTEGRATION` + `held_ball`), then replays the throw up to
+   `aim_iters` times. It measures where the ball descends through `AIM_Z` = 0.16 (rim + radius) and updates
+   the aim point with a 2-D Broyden (secant) step. Plain fixed-point iteration oscillated (landing/aim gain ~1.7).
+   Planning costs ~0.4 s/episode.
+9. **Color grounding:** ball colors and bin colors are shuffled **independently**, and the target ball color and
+   target bin color are sampled independently. So "throw the green ball into the blue bucket" is normal; ball
+   color == bin color only happens by chance. Bin walls are recolored to the floor color so color is visible.
+10. YAML: write floats like `1.0e-4`. PyYAML parses `1e-4` as a string.
+
+## Known issues / next steps (in priority order)
+
+1. **Release interference (main cause of `missed`).** `artifacts/release_diag.py` shows the fingertips (usually
+   `finger_outer_right_collision_00`) still touching the ball for 1-3 ticks after release, because the fingers
+   open slowly (kp=10). The landing becomes a jagged function of aim, so Broyden cannot converge. Ideas not tried yet:
+   - start opening the gripper 1-2 ticks before `q_rel` (keeping the weld until the release tick)
+   - keep the hand at constant velocity for a few ticks after release instead of decelerating immediately
+   - a small upward/backward hand motion right after release
+2. **Throw IK misses on some seeds** (residual 6-12 cm, e.g. seeds 4, 8, 28): add more throw-yaw candidates
+   (±20-30° off heading), or lower/shift `release_z` / `release_forward`.
+3. **Occasional grasp failures** from fingers bumping neighbor balls during descent.
+4. **User report: some "success" videos appear to show the ball in the wrong-colored basket.** Not yet resolved.
+   - A check on the current code (`artifacts/color_check.py`, seeds 0-11): every success landed in the bin whose
+     color matches the *instruction*, and the rendered ball/bin rgba match the task.
+   - Likely explanation: the instruction pairs *different* colors (decision 9), and the mp4 filenames and frames
+     do not show the instruction.
+   - The reported videos are in `scripts/artifacts/expert/` (run from `scripts/`, possibly older code).
+   - To close this out: put the instruction and ball/bin colors in the video filename or as a text overlay in
+     `eval_expert.py` / `eval_policy.py`, regenerate videos from the repo root, and re-inspect. If a real mismatch
+     shows up, check `ThrowEnv.reset` (`body_color`, `bin_assigned`, `target_bin_idx`) and `ball_in_bin`.
+   - Also consider whether the 0.85-alpha bin floors or the `frontcam` angle make adjacent bins look alike.
+5. After the expert reaches >= 85% (or the gap is documented): run `eval_expert.py --n-episodes 100`, save
+   success/failure mp4s + `summary.json`.
+6. Phase 2: `collect_demos.py` smoke (3 episodes), then the full N=500. Run `dataset_stats.py` to confirm many
+   ball/bin color pairs, and `viz_episode.py`. Upgrade the writer to real LeRobot v2 parquet if lerobot is installed.
+   Note `collect_demos.py` records `obs` *before* each action (correct), and re-samples the instruction template
+   (the env's own instruction differs; pick one source).
+7. Phase 3/4: see `AGENT_HANDOFF.md` sections "Phase 3" and "Phase 4". `eval_policy.py` must use the same grasp
+   assist (it does, via `env.step`).
+8. Write `PLAN.md` (architecture, locked decisions, phase results with numbers, weld ruling, chunking tradeoff,
+   what was not tested, Phase 5 skipped) and `README.md` (install, data, train both backends, eval, GL notes).
+9. Delete the throwaway `artifacts/*.py` diagnostics before committing (the folder is gitignored anyway).
+
+## Diagnostic scripts (throwaway, in `artifacts/`, run from repo root)
+
+- `probe.py N`: headless expert over seeds 0..N-1: outcome, planned error, aim log, IK residuals, planning time.
+- `grasp_diag.py 1,2,3`: grasp point vs ball (EE frame), finger angles, and contacts at the close tick.
+- `release_diag.py 1,2,3`: ball velocity vs nominal at release, and contacts in the ticks after release.
+- `trace.py 1,2,3`: first robot-ball contact during the approach.
+- `snap.py SEED STEP,STEP`: close-up renders around the target ball to `artifacts/snap.png`.
+- `color_check.py`: checks rendered colors and landing bin vs the instruction.
+- `probe2.py` / `probe3.py`: finger mesh gap profile; joint-path collision check.
