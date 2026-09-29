@@ -27,12 +27,15 @@ class ExpertConfig:
     throw_duration_s: float = 0.30
     flight_time: float = 0.40
     follow_through_s: float = 0.25
+    release_lead: int = 0  # ticks before q_rel at which the gripper is commanded open
+    coast_ticks: int = 0  # ticks at constant release velocity before the follow-through decelerates
     grasp_close_steps: int = 10
     pregrasp_open: float = -0.55  # partial opening (~11 cm tips) so fingers miss neighbour balls
     ik_iters: int = 200
     ik_damping: float = 1e-4
     max_dq: float = 0.12
     rot_weight: float = 0.3
+    fallback_rot_weight: float = 0.3  # retried when no yaw reaches with rot_weight
     aim_iters: int = 6
     aim_tol: float = 0.005
 
@@ -45,7 +48,7 @@ class ExpertConfig:
 class ThrowExpert:
     """Open-loop FSM (ready, hover, grasp, lift, wind-up, throw, release, follow-through).
 
-    Grasp/release goes through the env's grasp assist (gripper command), so a learned
+    Grasp/release is purely physical (friction between fingers and ball), so a learned
     policy sees identical mechanics. The throw is aimed by shooting: the plan is replayed
     on the deterministic sim from a pre-throw snapshot and the aim point is shifted by the
     measured miss until it converges.
@@ -83,18 +86,23 @@ class ThrowExpert:
             return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]) @ rot_down
 
         def chain(points, yaws):
-            """IK through `points` from throw_ready for the first yaw that reaches all of them."""
+            """IK through `points` from throw_ready for the first yaw that reaches all of them.
+
+            If no yaw reaches, retry with a weaker orientation weight (a tilted wrist)."""
             best = (np.inf, None)
-            for yaw in yaws:
-                d.qpos[env._jnt_qpos] = q_ready
-                qs, err = [], 0.0
-                for p in points:
-                    q, e = dls_ik(m, d, body, off, dof_ids, p, rot(yaw), cfg.ik_iters, cfg.ik_damping, cfg.max_dq, cfg.rot_weight)
-                    qs.append(q)
-                    err = max(err, e)
-                if err < best[0]:
-                    best = (err, qs)
-                if err < 0.005:
+            for rw in (cfg.rot_weight, cfg.fallback_rot_weight):
+                for yaw in yaws:
+                    d.qpos[env._jnt_qpos] = q_ready
+                    qs, err = [], 0.0
+                    for p in points:
+                        q, e = dls_ik(m, d, body, off, dof_ids, p, rot(yaw), cfg.ik_iters, cfg.ik_damping, cfg.max_dq, rw)
+                        qs.append(q)
+                        err = max(err, e)
+                    if err < best[0]:
+                        best = (err, qs)
+                    if err < 0.005:
+                        break
+                if best[0] < 0.005:
                     break
             self.ik_err.append(round(best[0], 4))
             return best[1]
@@ -184,19 +192,24 @@ class ThrowExpert:
         cfg = self.cfg
         v = release_velocity(self._p_rel, aim, cfg.flight_time)
         qd = self._v2qd @ v
-        q_ft = self._q_rel + qd * cfg.follow_through_s * 0.5
         seg = self._move(self._q_wind, self._q_rel, cfg.throw_duration_s, GRIPPER_CLOSED, qd1=qd)
-        ft = self._move(self._q_rel, q_ft, cfg.follow_through_s, GRIPPER_OPEN, qd0=qd)
-        self._release_offset = len(seg)
+        for a in seg[len(seg) - cfg.release_lead:]:
+            a[7] = GRIPPER_OPEN
+        # Coast at release velocity so the opening fingers keep pace with the ball, then decelerate.
+        coast = [np.append(self._q_rel + qd * (i / self._hz), GRIPPER_OPEN) for i in range(1, cfg.coast_ticks + 1)]
+        q_c = coast[-1][:7] if coast else self._q_rel
+        q_ft = q_c + qd * cfg.follow_through_s * 0.5
+        ft = self._move(q_c, q_ft, cfg.follow_through_s, GRIPPER_OPEN, qd0=qd)
+        self._release_offset = len(seg) - cfg.release_lead
         hold = [np.append(q_ft, GRIPPER_OPEN)] * (2 * self._hz)
-        return seg + ft + hold
+        return seg + coast + ft + hold
 
     def _simulate(self, env: ThrowEnv, throw: list[np.ndarray]) -> np.ndarray | None:
         """Ball xy where it descends through AIM_Z after release (None if not held at release)."""
         ball = env.task["ball_body"]
         prev = None
         for k, a in enumerate(throw):
-            if k == self._release_offset and env.held_ball != ball:
+            if k == self._release_offset and not env._is_grasping():
                 return None
             env.physics_step(a)
             p = env.ball_pos(ball)

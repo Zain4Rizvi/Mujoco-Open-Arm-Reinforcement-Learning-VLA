@@ -61,7 +61,8 @@ def main():
         print(f"ep {i}: {mode} err={inf.get('throw_error')}")
         if frames and ((mode == "success" and n_vid["success"] < args.max_videos // 2) or (mode != "success" and n_vid["fail"] < args.max_videos // 2)):
             tag = "ok" if mode == "success" else "fail"
-            imageio.mimsave(video_dir / f"{tag}_{i:03d}_{mode}.mp4", frames[::2], fps=25)
+            task = f"{env.task['ball_color']}-into-{env.task['bin_color']}"
+            imageio.mimsave(video_dir / f"{tag}_{i:03d}_{mode}_{task}.mp4", frames[::2], fps=25)
             n_vid["success" if mode == "success" else "fail"] += 1
     n = args.n_episodes
     summary = {

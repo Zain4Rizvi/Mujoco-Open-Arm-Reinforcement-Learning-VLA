@@ -13,7 +13,6 @@ from openarm_vla.constants import (
     COLOR_RGBA,
     COLORS,
     GRASP_OFFSET,
-    GRASP_RADIUS,
     GRIP_CLOSE_CMD,
     GRIPPER_OPEN,
     HOME_CTRL_LEFT,
@@ -26,6 +25,8 @@ from openarm_vla.constants import (
     STATE_DIM,
 )
 from openarm_vla.env.success import EpisodeTracker
+
+BIN_MIN_SEP = 0.10  # smallest nominal bin spacing (Chebyshev) in the MJCF
 
 
 class ThrowEnv(gym.Env):
@@ -59,7 +60,9 @@ class ThrowEnv(gym.Env):
         self._site_ee = int(self.model.site("right_ee_control_point").id)
         self._ee_body = int(self.model.body("openarm_right_ee_base_link").id)
         self._grasp_offset = np.array(GRASP_OFFSET)
-        self.held_ball: str | None = None
+        self._finger_bodies = {
+            int(self.model.body(n).id) for n in ("openarm_right_ee_inner_finger", "openarm_right_ee_outer_finger")
+        }
         self._cam_front = int(self.model.camera("frontcam").id)
         self._cam_wrist = int(self.model.camera("camera_wrist_right").id)
         self._ball_body = {c: int(self.model.body(f"ball_{c}").id) for c in COLORS}
@@ -111,7 +114,6 @@ class ThrowEnv(gym.Env):
         mujoco.mj_resetDataKeyframe(self.model, self.data, self._home_key)
         for eq in self._eq_weld.values():
             self.data.eq_active[eq] = 0
-        self.held_ball = None
 
         ball_colors = list(COLORS)
         bin_colors = list(COLORS)
@@ -152,9 +154,15 @@ class ThrowEnv(gym.Env):
             self.model.geom_rgba[ids[0]] = floor_rgba
             for gid in ids[1:]:
                 self.model.geom_rgba[gid] = rgba
-            jitter = self._rng.uniform(-self.cfg.bin_xy_jitter, self.cfg.bin_xy_jitter, 2)
-            self.model.body_pos[self._bin_body[i], 0] = self._bin_pos0[i, 0] + jitter[0]
-            self.model.body_pos[self._bin_body[i], 1] = self._bin_pos0[i, 1] + jitter[1]
+        # Bins are 0.14 m across the walls but only ~0.10 m apart in the MJCF, so jitter can push a
+        # neighbour's wall across a bin's opening. Resample until no pair is closer than nominal.
+        for _ in range(1000):
+            xy = self._bin_pos0[:, :2] + self._rng.uniform(-self.cfg.bin_xy_jitter, self.cfg.bin_xy_jitter, (5, 2))
+            sep = np.abs(xy[:, None] - xy[None]).max(-1) + np.eye(5)
+            if sep.min() >= BIN_MIN_SEP:
+                break
+        for i in range(5):
+            self.model.body_pos[self._bin_body[i], :2] = xy[i]
 
         # Resolve which XML body holds the target color, and which bin index is that color.
         target_ball_body = next(b for b, c in body_color.items() if c == target_ball)
@@ -192,30 +200,12 @@ class ThrowEnv(gym.Env):
         return obs, {"task": {k: v for k, v in self.task.items() if k != "body_color"}}
 
     def physics_step(self, action: np.ndarray) -> None:
-        """One control tick: clip, grasp assist, substeps. No bookkeeping, so planners can reuse it."""
+        """One control tick: clip, substeps. No bookkeeping, so planners can reuse it."""
         action = np.clip(np.asarray(action, dtype=np.float64), self.action_space.low, self.action_space.high)
         self.data.ctrl[self._left_act] = HOME_CTRL_LEFT
         self.data.ctrl[self._right_act] = action
-        self._grasp_assist(float(action[7]))
         for _ in range(self._n_substeps):
             mujoco.mj_step(self.model, self.data)
-
-    def _grasp_assist(self, grip_cmd: float) -> None:
-        # Weld-on-hold: close near a ball -> weld it at its current relative pose; open -> release.
-        if grip_cmd < GRIP_CLOSE_CMD:
-            if self.held_ball is not None:
-                self.set_weld(self.held_ball, False)
-                self.held_ball = None
-            return
-        # Only a gripper that is still physically open can close around a ball.
-        if self.held_ball is not None or self.data.qpos[self._finger_qpos] > GRIP_CLOSE_CMD:
-            return
-        gp = self.grasp_point()
-        dists = {c: float(np.linalg.norm(self.ball_pos(c) - gp)) for c in COLORS}
-        c = min(dists, key=dists.get)
-        if dists[c] < GRASP_RADIUS:
-            self.held_ball = c
-            self.set_weld(c, True)
 
     def step(self, action: np.ndarray):
         self.physics_step(action)
@@ -301,31 +291,24 @@ class ThrowEnv(gym.Env):
         return self.data.xpos[self._ee_body] + self.data.xmat[self._ee_body].reshape(3, 3) @ self._grasp_offset
 
     def _is_grasping(self) -> bool:
-        return self.held_ball == self.task["ball_body"]
+        return self.holding(self.task["ball_body"])
 
-    def set_weld(self, ball_body: str, active: bool) -> None:
-        eq = self._eq_weld[ball_body]
-        if active:
-            # eq_data = [anchor(3), relpos(3), relquat(4), torquescale]; body2 pose in body1 frame.
-            b1, b2 = self._ee_body, self._ball_body[ball_body]
-            r1 = self.data.xmat[b1].reshape(3, 3)
-            self.model.eq_data[eq, 0:3] = 0.0
-            self.model.eq_data[eq, 3:6] = r1.T @ (self.data.xpos[b2] - self.data.xpos[b1])
-            q1inv = np.zeros(4)
-            mujoco.mju_negQuat(q1inv, self.data.xquat[b1])
-            rel = np.zeros(4)
-            mujoco.mju_mulQuat(rel, q1inv, self.data.xquat[b2])
-            self.model.eq_data[eq, 6:10] = rel
-        self.data.eq_active[eq] = int(active)
+    def holding(self, ball_body: str) -> bool:
+        """Both fingers touch the ball."""
+        g = self._ball_geom[ball_body]
+        touching = set()
+        for c in self.data.contact[: self.data.ncon]:
+            if g in (c.geom1, c.geom2):
+                touching.add(int(self.model.geom_bodyid[c.geom2 if c.geom1 == g else c.geom1]))
+        return self._finger_bodies <= touching
 
-    def get_sim_state(self) -> tuple:
+    def get_sim_state(self) -> np.ndarray:
         spec = mujoco.mjtState.mjSTATE_INTEGRATION
         s = np.zeros(mujoco.mj_stateSize(self.model, spec))
         mujoco.mj_getState(self.model, self.data, s, spec)
-        return s, self.held_ball
+        return s
 
-    def set_sim_state(self, state: tuple) -> None:
-        s, self.held_ball = state
+    def set_sim_state(self, s: np.ndarray) -> None:
         mujoco.mj_setState(self.model, self.data, s, mujoco.mjtState.mjSTATE_INTEGRATION)
         mujoco.mj_forward(self.model, self.data)
 

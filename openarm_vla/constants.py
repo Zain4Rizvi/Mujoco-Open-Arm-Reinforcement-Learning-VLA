@@ -23,12 +23,11 @@ LEFT_ACTUATORS = tuple(f"left_joint{i}_ctrl" for i in range(1, 8)) + ("left_fing
 # Finger joint: 0 = closed (tips ~9 mm apart), -0.7854 = fully open (~15 cm).
 GRIPPER_OPEN = -0.7854
 GRIPPER_CLOSED = 0.0
-GRIP_CLOSE_CMD = -0.4  # gripper command above this = "close" for the grasp assist
+GRIP_CLOSE_CMD = -0.4  # gripper command above this counts as "closed" for failure bookkeeping
 
 # Ball-centre point between the fingers, in openarm_right_ee_base_link frame. The palm collider
 # reaches z=-0.111 and fingertips end at ~-0.155, so a 3 cm ball centres at -0.145.
 GRASP_OFFSET = (0.0, 0.0, -0.145)
-GRASP_RADIUS = 0.04  # ball COM within this of the grasp point can be welded
 
 HOME_CTRL_LEFT = (0.0, 0.0, 0.0, 1.570796, 0.0, 0.0, 0.0, 0.0)
 THROW_READY_RIGHT = (-0.720369, 2.27095, 0.290977, 1.90389, 1.23759, 0.780000, 0.558776)

@@ -8,11 +8,14 @@ windup_drop: 0.06
 throw_duration_s: 0.30
 flight_time: 0.40
 follow_through_s: 0.25
+release_lead: 1
+coast_ticks: 6
 grasp_close_steps: 10
 pregrasp_open: -0.7854
 ik_iters: 200
 ik_damping: 1.0e-4
 max_dq: 0.12
 rot_weight: 0.3
+fallback_rot_weight: 0.01
 aim_iters: 8
 aim_tol: 0.005

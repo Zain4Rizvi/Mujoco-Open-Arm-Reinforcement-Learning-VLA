@@ -9,7 +9,7 @@ from openarm_vla.constants import REPO_ROOT
 from openarm_vla.env.throw_env import ThrowEnv
 from openarm_vla.expert.throw_expert import ExpertConfig, ThrowExpert
 
-N_SAMPLES = 3
+N_SAMPLES = 10
 
 
 def main():

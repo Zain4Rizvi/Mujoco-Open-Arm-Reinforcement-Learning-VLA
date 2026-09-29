@@ -90,12 +90,12 @@ The approved plan lives at `c:\Users\black\.cursor\plans\vla_throw_pipeline_bce6
 - Right arm only; the left arm is held at `home` ctrl every step.
 - Do not claim a trained policy exists unless a checkpoint exists.
 
-## Status (last updated 2026-09-28)
+## Status (last updated 2026-09-29)
 
 | Phase | State | Evidence |
 |---|---|---|
 | 0 Env | **Done** | `uv run python -m pytest -v`: 7/7 pass; `artifacts/phase0_rgb.png` (front and wrist cameras side by side) |
-| 1 Expert | **In progress, ~62% success** (target 85%) | 40-seed headless probe: 25 success, 10 missed, 4 never_grasped, 1 wrong_bucket. `eval_expert.py --n-episodes 100` not yet run on the current code |
+| 1 Expert | **Done, 87% success** (target 85%), physical grasp (no weld) | `eval_expert.py --n-episodes 100`: 87 success, 9 missed, 3 wrong_bucket, 1 never_grasped; `artifacts/expert/summary.json` + labeled mp4s. Headless `sweep.py 80`: 73/80 |
 | 2 Dataset | Not started | Writer and scripts exist but are unverified against the current env |
 | 3 Train | Not started | `train_smolvla.py` / `train_openpi.py` are dry-run stubs |
 | 4 Eval | Not started | `eval_policy.py` exists, unverified |
@@ -126,7 +126,7 @@ v2/pedestal/throw_multi_scene.xml   the scene: 5 balls on a side table, 5 floor 
 openarm_vla/
   constants.py                  joint/actuator names, colors, gripper constants, GRASP_OFFSET, dims
   config.py                     EnvConfig dataclass + load_yaml
-  env/throw_env.py              ThrowEnv (Gymnasium): reset randomization, physics_step + grasp assist, obs, sim-state save/restore
+  env/throw_env.py              ThrowEnv (Gymnasium): reset randomization, physics_step, contact-based holding(), obs, sim-state save/restore
   env/success.py                ball_in_bin, EpisodeTracker, FailureMode taxonomy
   expert/ik.py                  6-D damped-least-squares IK on a body-fixed point; jacobian_velocity
   expert/ballistic.py           release_velocity (closed-form projectile), quintic_interp
@@ -154,16 +154,13 @@ artifacts/                      gitignored outputs + throwaway diagnostic script
 
 ## Decisions taken (and why)
 
-1. **The grasp weld lives in the env, not the expert (deviates from AGENT_HANDOFF.md).** `ThrowEnv.physics_step`
-   runs a "grasp assist":
-   - gripper commanded closed (`action[7] > GRIP_CLOSE_CMD`) **and** fingers still physically open **and**
-     a ball COM within `GRASP_RADIUS` (4 cm) of the grasp point: weld that ball at its *current* relative pose
-     (`set_weld` writes `eq_data` relpos/relquat).
-   - gripper commanded open: release. The ball keeps the hand's real velocity.
-
-   The handoff's version (expert toggles the weld and writes the release velocity into the ball's `qvel`) would be
-   unavailable to a VLA at eval time, so demos and eval would not match. **No velocity is injected anymore.**
-   `dropped_during_grasp` is effectively unreachable now (a weld never slips).
+1. **Weld ruling: no weld. The grasp is purely physical (friction), deviating from AGENT_HANDOFF.md.**
+   `physics_step` only writes ctrl and steps; the `grasp_right_*` welds stay disabled. "Grasping" is
+   `ThrowEnv.holding(ball)`: both finger bodies (`openarm_right_ee_inner_finger` / `_outer_finger`) touch the ball.
+   Measured on 40 seeds: the ball was still held at the release tick in 36/37 grasped episodes with no tuning
+   (40 g ball, fingertip condim 4 / friction 1.0, finger kp=10 squeezes well above throw loads). Success was 26/40
+   vs 25/40 with the old weld assist, so the weld bought nothing. Demos and VLA eval use identical mechanics, and
+   `dropped_during_grasp` is reachable again.
 2. **Gripper polarity:** finger joint `0` = closed (tips ~9 mm apart), `-0.7854` = fully open (~15 cm).
    The original scaffold had this inverted.
 3. **Grasp point** = `openarm_right_ee_base_link` origin + (0, 0, -0.145) in the EE frame. Measured from the
@@ -182,14 +179,22 @@ artifacts/                      gitignored outputs + throwaway diagnostic script
    5. close for 10 ticks
    6. lift
    7. wind-up
-   8. throw, ending at `q_rel` with joint velocity `qd = J^+ v`
-   9. release on the first follow-through tick
+   8. throw, ending at `q_rel` with joint velocity `qd = J^+ v`; gripper commanded open `release_lead` (1) tick
+      before `q_rel` (the fingers are slow; 2 ticks was worse)
+   9. coast at `qd` for `coast_ticks` (6) so the opening fingers keep pace with the ball, then decelerate
    10. hold
+
+   Sweep (40 seeds): lead 0 -> 29, lead 1 -> 32, lead 2 -> 26 (coast 0). On 80 seeds: lead 1/coast 0 -> 61,
+   lead 1/coast 6 -> 64. `aim_iters` 14 instead of 8: +1, not worth the planning time.
 7. **Wrist yaw per episode.** Grasp yaw maximizes finger clearance from neighbor balls; throw yaw points the
    gripper's open side (local ±x) along the throw heading so the ball does not leave through a finger. Each IK chain
-   restarts from `throw_ready` and tries candidate yaws until the position residual is < 5 mm.
+   restarts from `throw_ready` and tries candidate yaws until the position residual is < 5 mm. If no yaw reaches,
+   the chain retries with `fallback_rot_weight` (0.01, a tilted wrist). This fixed the far-corner ball (XML body
+   `ball_green`, x=0.33, y=-0.35), unreachable straight-down from the `throw_ready` branch (joints 1 and 5 hit limits;
+   a straight-down solution exists only on a different arm branch), and also the throw-IK misses: 64 -> 73/80.
+   Fallback 0.0 -> 71/80, 0.003 -> 70/80.
 8. **Aiming by shooting.** MuJoCo is deterministic, so the expert simulates the pre-throw part once, snapshots
-   (`get_sim_state` / `set_sim_state`, `mjSTATE_INTEGRATION` + `held_ball`), then replays the throw up to
+   (`get_sim_state` / `set_sim_state`, `mjSTATE_INTEGRATION`), then replays the throw up to
    `aim_iters` times. It measures where the ball descends through `AIM_Z` = 0.16 (rim + radius) and updates
    the aim point with a 2-D Broyden (secant) step. Plain fixed-point iteration oscillated (landing/aim gain ~1.7).
    Planning costs ~0.4 s/episode.
@@ -197,39 +202,34 @@ artifacts/                      gitignored outputs + throwaway diagnostic script
    target bin color are sampled independently. So "throw the green ball into the blue bucket" is normal; ball
    color == bin color only happens by chance. Bin walls are recolored to the floor color so color is visible.
 10. YAML: write floats like `1.0e-4`. PyYAML parses `1e-4` as a string.
+11. **Bin jitter is rejection-sampled** so no two bins are closer (Chebyshev) than `BIN_MIN_SEP` = 0.10, the MJCF's
+    nominal spacing. Bins are 0.14 m across their walls, so the old independent ±4 cm jitter pushed a neighbour's wall
+    across the target opening; balls landed dead centre (planned error < 1 cm) and rolled away on top of it.
+    Fix: 26 -> 29/40.
 
 ## Known issues / next steps (in priority order)
 
-1. **Release interference (main cause of `missed`).** `artifacts/release_diag.py` shows the fingertips (usually
-   `finger_outer_right_collision_00`) still touching the ball for 1-3 ticks after release, because the fingers
-   open slowly (kp=10). The landing becomes a jagged function of aim, so Broyden cannot converge. Ideas not tried yet:
-   - start opening the gripper 1-2 ticks before `q_rel` (keeping the weld until the release tick)
-   - keep the hand at constant velocity for a few ticks after release instead of decelerating immediately
-   - a small upward/backward hand motion right after release
-2. **Throw IK misses on some seeds** (residual 6-12 cm, e.g. seeds 4, 8, 28): add more throw-yaw candidates
-   (±20-30° off heading), or lower/shift `release_z` / `release_forward`.
-3. **Occasional grasp failures** from fingers bumping neighbor balls during descent.
-4. **User report: some "success" videos appear to show the ball in the wrong-colored basket.** Not yet resolved.
-   - A check on the current code (`artifacts/color_check.py`, seeds 0-11): every success landed in the bin whose
-     color matches the *instruction*, and the rendered ball/bin rgba match the task.
-   - Likely explanation: the instruction pairs *different* colors (decision 9), and the mp4 filenames and frames
-     do not show the instruction.
-   - The reported videos are in `scripts/artifacts/expert/` (run from `scripts/`, possibly older code).
-   - To close this out: put the instruction and ball/bin colors in the video filename or as a text overlay in
-     `eval_expert.py` / `eval_policy.py`, regenerate videos from the repo root, and re-inspect. If a real mismatch
-     shows up, check `ThrowEnv.reset` (`body_color`, `bin_assigned`, `target_bin_idx`) and `ball_in_bin`.
-   - Also consider whether the 0.85-alpha bin floors or the `frontcam` angle make adjacent bins look alike.
-5. After the expert reaches >= 85% (or the gap is documented): run `eval_expert.py --n-episodes 100`, save
-   success/failure mp4s + `summary.json`.
-6. Phase 2: `collect_demos.py` smoke (3 episodes), then the full N=500. Run `dataset_stats.py` to confirm many
+1. **Remaining expert failures (13/100), stopped here on diminishing returns.**
+   - `missed` / `wrong_bucket`: Broyden aim does not converge on some seeds; the landing is still a jagged
+     function of aim (fingertip contact right after release). A few extra aim iterations gained only 1/80.
+   - `never_grasped`: the far-corner ball, a few seeds still leave 3-6 cm IK residual even with the tilt fallback.
+     A real fix is planning on a second arm branch (joint 1 around +1.24), with its own collision-free transit.
+   - Non-target balls occasionally get knocked off the table (seen in a success video); harmless to the metric.
+2. **Wrong-colored basket report: explained, not a bug.** `eval_expert.py` filenames now carry
+   `{ball}-into-{bin}` (e.g. `ok_000_success_green-into-purple.mp4`), and ball/bin colors are independent
+   (decision 9). From `frontcam` a landed ball is hidden behind the 13 cm walls and the front bins occlude the
+   back row, so the video alone cannot show which bin holds the ball; `ball_in_bin` is authoritative.
+   The old reported videos in `scripts/artifacts/expert/` and the unlabeled `artifacts/expert/*_missed.mp4` /
+   `ok_010_success.mp4` predate this code. `eval_policy.py` does not label its videos yet.
+3. Phase 2: `collect_demos.py` smoke (3 episodes), then the full N=500. Run `dataset_stats.py` to confirm many
    ball/bin color pairs, and `viz_episode.py`. Upgrade the writer to real LeRobot v2 parquet if lerobot is installed.
    Note `collect_demos.py` records `obs` *before* each action (correct), and re-samples the instruction template
    (the env's own instruction differs; pick one source).
-7. Phase 3/4: see `AGENT_HANDOFF.md` sections "Phase 3" and "Phase 4". `eval_policy.py` must use the same grasp
-   assist (it does, via `env.step`).
-8. Write `PLAN.md` (architecture, locked decisions, phase results with numbers, weld ruling, chunking tradeoff,
+4. Phase 3/4: see `AGENT_HANDOFF.md` sections "Phase 3" and "Phase 4". `eval_policy.py` goes through `env.step`,
+   so the policy gets the same physical grasp as the demos.
+5. Write `PLAN.md` (architecture, locked decisions, phase results with numbers, weld ruling, chunking tradeoff,
    what was not tested, Phase 5 skipped) and `README.md` (install, data, train both backends, eval, GL notes).
-9. Delete the throwaway `artifacts/*.py` diagnostics before committing (the folder is gitignored anyway).
+6. Delete the throwaway `artifacts/*.py` diagnostics before committing (the folder is gitignored anyway).
 
 ## Diagnostic scripts (throwaway, in `artifacts/`, run from repo root)
 
@@ -240,3 +240,6 @@ artifacts/                      gitignored outputs + throwaway diagnostic script
 - `snap.py SEED STEP,STEP`: close-up renders around the target ball to `artifacts/snap.png`.
 - `color_check.py`: checks rendered colors and landing bin vs the instruction.
 - `probe2.py` / `probe3.py`: finger mesh gap profile; joint-path collision check.
+- `sweep.py N key=val ...`: outcome counts over seeds 0..N-1 with `ExpertConfig` overrides (run several in parallel).
+- `grip_diag.py N`: when the physical hold starts / is lost relative to the release tick.
+- `land_diag.py 1,2,3`: ball position relative to the target bin and its contacts after release.
