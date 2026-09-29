@@ -1,24 +1,40 @@
-import mujoco
+"""Play a few scripted throws in the MuJoCo viewer."""
+
+import time
+
 import mujoco.viewer
-import math
 
-model = mujoco.MjModel.from_xml_path("v2/pedestal/throw_multi_scene.xml")
-data = mujoco.MjData(model)
+from openarm_vla.config import EnvConfig
+from openarm_vla.constants import REPO_ROOT
+from openarm_vla.env.throw_env import ThrowEnv
+from openarm_vla.expert.throw_expert import ExpertConfig, ThrowExpert
 
-integral_1 = 0
-integral_2 = 0.0
-integral_3 = 0.0
-integral_limit = 20.0  # anti-windup clamp, tune this
-
-prev_error2 = 0.0
-prev_error3 = 0.0
-curr_time = 0
+N_SAMPLES = 3
 
 
-with mujoco.viewer.launch_passive(model, data) as viewer:
+def main():
+    env = ThrowEnv(EnvConfig.from_yaml(REPO_ROOT / "configs" / "env.yaml"), render_mode="human")
+    expert = ThrowExpert(ExpertConfig.from_yaml(REPO_ROOT / "configs" / "expert.yaml"))
+    dt = 1.0 / env.cfg.control_hz
+    with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
+        for i in range(N_SAMPLES):
+            if not viewer.is_running():
+                break
+            _, info = env.reset(seed=i)
+            viewer.sync()
+            expert.reset(env)
+            term = trunc = False
+            while viewer.is_running() and not (term or trunc):
+                _, _, term, trunc, info = env.step(expert.act(env))
+                viewer.sync()
+                time.sleep(dt)
+            print(f"sample {i}: {info.get('failure_mode')}  {env.task['instruction']}")
+            hold_until = time.time() + 1.5
+            while viewer.is_running() and time.time() < hold_until:
+                viewer.sync()
+                time.sleep(dt)
+    env.close()
 
-    while viewer.is_running():
-        mujoco.mj_step(model, data)
 
-
-        viewer.sync()
+if __name__ == "__main__":
+    main()
