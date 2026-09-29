@@ -3,7 +3,7 @@ name = "open-arm-folding"
 version = "0.1.0"
 description = "OpenArm throw env, scripted expert, and VLA fine-tuning pipeline"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "mujoco>=3.14.0",
     "numpy>=2.2.6",
@@ -18,8 +18,18 @@ dependencies = [
 [project.optional-dependencies]
 train = [
     "torch",
-    "lerobot",
+    "torchvision",
+    "lerobot[smolvla]==0.6.1",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [build-system]
 requires = ["hatchling"]

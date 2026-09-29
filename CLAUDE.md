@@ -94,11 +94,11 @@ The approved plan lives at `c:\Users\black\.cursor\plans\vla_throw_pipeline_bce6
 
 | Phase | State | Evidence |
 |---|---|---|
-| 0 Env | **Done** | `uv run python -m pytest -v`: 7/7 pass; `artifacts/phase0_rgb.png` (front and wrist cameras side by side) |
+| 0 Env | **Done** | `uv run python -m pytest -v`: 8/8 pass (7 env/dataset + SmolVLA smoke); `artifacts/phase0_rgb.png` (front and wrist cameras side by side) |
 | 1 Expert | **Done, 87% success** (target 85%), physical grasp (no weld) | `eval_expert.py --n-episodes 100`: 87 success, 9 missed, 3 wrong_bucket, 1 never_grasped; `artifacts/expert/summary.json` + labeled mp4s. Headless `sweep.py 80`: 73/80 |
 | 2 Dataset | Not started | Writer and scripts exist but are unverified against the current env |
 | 3 Train | Not started | `train_smolvla.py` / `train_openpi.py` are dry-run stubs |
-| 4 Eval | Not started | `eval_policy.py` exists, unverified |
+| 4 Eval | **Pretrained inference works; no fine-tuned checkpoint exists** | `tests/test_smolvla_smoke.py` and `eval_policy.py --policy smolvla --checkpoint lerobot/smolvla_base --n-episodes 1` run closed loop (~0.45 s/chunk on the GTX 1660); the base model is untrained on OpenArm, so the arm flails (`never_grasped`). `artifacts/smolvla_smoke/` |
 | Docs | Not started | `PLAN.md` and `README.md` are required deliverables and are still missing (`README.md` is empty) |
 
 Nothing is committed yet (only the initial "Created Repository" commit exists).
@@ -108,11 +108,14 @@ Nothing is committed yet (only the initial "Created Repository" commit exists).
 ```powershell
 cd "Z:\1 Github Projects\Robotics\Open Arm Folding"
 $env:MUJOCO_GL = "glfw"          # Windows offscreen GL. Linux: egl or osmesa
-uv sync                          # installs openarm_vla in editable mode (hatchling)
+uv sync --extra train            # Python 3.12; openarm_vla editable + CUDA torch (cu128) + lerobot[smolvla]==0.6.1
+# HF_HOME=Z:\hf_cache is set persistently (setx): C: has no room for the ~3 GB of weights
 
 uv run python -m pytest -v                                                   # env + dataset tests
 uv run python scripts/eval_expert.py --n-episodes 20 --video-dir artifacts/expert
 uv run python artifacts/probe.py 40                                          # fast headless expert check
+uv run python scripts/eval_policy.py --policy smolvla --checkpoint lerobot/smolvla_base --n-episodes 1 --video-dir artifacts/smolvla_smoke
+uv run python scripts/vla_viewer.py            # live MuJoCo viewer; type instructions in the terminal (r = reset, q = quit)
 ```
 
 Always run from the **repo root**. `video_dir` / `out` paths are relative, so running from `scripts/`
@@ -134,11 +137,13 @@ openarm_vla/
   data/lerobot_writer.py        npz + mp4 + meta/info.json (NOT real LeRobot parquet yet)
   policies/base.py              Policy protocol: predict_chunk(obs) -> (T, 8)
   policies/dummy.py             DummyPolicy (hold pose, gripper open), ExpertPolicy wrapper
-  policies/smolvla.py           SmolVLAAdapter (lerobot import path is a guess; pin to installed version)
+  policies/smolvla.py           SmolVLAAdapter (lerobot 0.6.1). Base checkpoint: features overridden to state 15 / action 8
+                                (SmolVLA pads to 32), no norm stats (SO-100 stats are 6-D), fp32 (no bf16 on Turing).
+                                A checkpoint with an 8-D action loads its own processors (untested until Phase 3)
   policies/openpi_pi0.py        OpenPiAdapter (raises NotImplementedError after import)
-scripts/                        eval_expert, collect_demos, dataset_stats, viz_episode, eval_policy, train_smolvla, train_openpi
+scripts/                        eval_expert, collect_demos, dataset_stats, viz_episode, eval_policy, vla_viewer, train_smolvla, train_openpi
 configs/                        env.yaml, expert.yaml, dataset.yaml, train_smolvla.yaml, eval.yaml
-tests/                          test_env.py, test_dataset.py
+tests/                          test_env.py, test_dataset.py, test_smolvla_smoke.py (skipped without lerobot/CUDA)
 artifacts/                      gitignored outputs + throwaway diagnostic scripts (see below)
 ```
 
