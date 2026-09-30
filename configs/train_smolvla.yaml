@@ -1,11 +1,7 @@
-dataset_repo: data/datasets/openarm_throw
+dataset_root: data/datasets/openarm_throw
 output_dir: checkpoints/smolvla_throw
 batch_size: 8
 steps: 20000
-chunk_size: 16
-lora_rank: 16
+warmup_steps: 1000
 lr: 1.0e-4
-wandb: false
-# overfit sanity: set n_episodes=10 and steps=500
-n_episodes: null
-overfit: false
+num_workers: 2

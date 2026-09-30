@@ -19,7 +19,7 @@ dependencies = [
 train = [
     "torch",
     "torchvision",
-    "lerobot[smolvla]==0.6.1",
+    "lerobot[smolvla,dataset]==0.6.1",
 ]
 
 [tool.uv.sources]

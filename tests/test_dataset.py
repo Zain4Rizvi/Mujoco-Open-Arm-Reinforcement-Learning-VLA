@@ -1,25 +1,41 @@
-import json
-from pathlib import Path
-
 import numpy as np
+import pytest
 
-from openarm_vla.data.lerobot_writer import LeRobotWriter
+pytest.importorskip("lerobot.datasets.lerobot_dataset")
+pytest.importorskip("datasets")
+
+from openarm_vla.data import create_dataset, open_dataset  # noqa: E402
 
 
-def test_lerobot_writer_layout(tmp_path):
-    w = LeRobotWriter(tmp_path, fps=50)
-    frame = {
-        "state": np.zeros(15, np.float32),
-        "action": np.zeros(8, np.float32),
-        "image_front": np.zeros((16, 16, 3), np.uint8),
-        "image_wrist": np.zeros((16, 16, 3), np.uint8),
+def _frame(task, v):
+    rng = np.random.default_rng(v)
+    return {
+        "observation.images.image_front": rng.integers(0, 255, (256, 256, 3), dtype=np.uint8),
+        "observation.images.image_wrist": rng.integers(0, 255, (256, 256, 3), dtype=np.uint8),
+        "observation.state": np.full(15, v, np.float32),
+        "action": np.full(8, v, np.float32),
+        "task": task,
     }
-    w.add_episode([frame, frame], "throw the red ball into the blue bucket", {"ball_color": "red", "bin_color": "blue"})
-    w.finalize()
-    info = json.loads((tmp_path / "meta" / "info.json").read_text(encoding="utf-8"))
-    assert info["total_episodes"] == 1
-    assert info["total_frames"] == 2
-    assert info["features"]["action"]["shape"] == [8]
-    assert (tmp_path / "data" / "episode_000000.npz").exists()
-    assert (tmp_path / "videos" / "image_front" / "episode_000000.mp4").exists()
-    assert "red" in (tmp_path / "meta" / "episodes.jsonl").read_text(encoding="utf-8")
+
+
+def test_dataset_roundtrip(tmp_path):
+    root = tmp_path / "ds"
+    ds = create_dataset(root, repo_id="local/ds")
+    for i in range(3):
+        ds.add_frame(_frame("throw the red ball into the blue bucket", i))
+    ds.save_episode()
+    ds.add_frame(_frame("discarded", 9))  # simulated failed rollout
+    ds.clear_episode_buffer()
+    for i in range(3):
+        ds.add_frame(_frame("put the green ball in the purple bin", i))
+    ds.save_episode()
+    ds.finalize()
+
+    ds = open_dataset(root)
+    assert len(ds) == 6 and ds.meta.total_episodes == 2
+    assert ds[0]["observation.images.image_front"].shape == (3, 256, 256)
+    assert ds[0]["observation.state"].shape == (15,)
+    assert ds[0]["action"].shape == (8,)
+    assert ds[0]["task"] == "throw the red ball into the blue bucket"
+    assert ds[3]["task"] == "put the green ball in the purple bin"
+    assert len(ds.meta.stats["action"]["mean"]) == 8

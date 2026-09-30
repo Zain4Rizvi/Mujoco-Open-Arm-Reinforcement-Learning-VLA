@@ -70,6 +70,7 @@ def main():
     p.add_argument("--policy", type=str, default=None)
     p.add_argument("--checkpoint", type=str, default="")
     p.add_argument("--match-seeds", action="store_true")
+    p.add_argument("--seeds-file", type=str, default=None, help="openarm_seeds.json from collect_demos; overrides --n-episodes/--seed")
     p.add_argument("--video-dir", type=str, default=None)
     p.add_argument("--eval-config", default=str(REPO_ROOT / "configs" / "eval.yaml"))
     args = p.parse_args()
@@ -86,6 +87,9 @@ def main():
     kind, policy = load_policy(policy_name, args.checkpoint or cfg.get("checkpoint") or "", expert)
     rng = np.random.default_rng(seed)
     seeds = [int(rng.integers(0, 2**31 - 1)) for _ in range(n)]
+    if args.seeds_file:
+        seeds = [r["seed"] for r in json.loads(Path(args.seeds_file).read_text(encoding="utf-8"))]
+        n = len(seeds)
 
     counts = Counter()
     by_color = defaultdict(Counter)

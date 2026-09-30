@@ -68,15 +68,16 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 # Project: OpenArm VLA throw pipeline
 
-Read this whole section before touching code. It supersedes `AGENT_HANDOFF.md` where they disagree.
+Read this whole section before touching code. `AGENT_HANDOFF.md` holds the detailed expert design history and
+diagnostic scripts; read it only when working on the expert or env mechanics.
 
 ## Goal
 
-Given an instruction like "throw the red ball into the blue bucket", a LoRA-fine-tuned VLA drives the
-**right** OpenArm (MuJoCo) to grasp the named ball and throw it into the named floor bin.
+Given an instruction like "throw the red ball into the blue bucket", a fine-tuned VLA drives the **right**
+OpenArm (MuJoCo) to grasp the named ball and throw it into the named floor bin. The VLA sees only camera
+images, the arm's own joint state and the text; it never gets ball/bin positions (the expert does).
 
-Pipeline: Gymnasium env -> scripted expert -> LeRobot-style demo dataset -> VLA fine-tune (SmolVLA default,
-pi0/openpi optional) -> closed-loop eval.
+Pipeline: Gymnasium env -> scripted expert -> lerobot demo dataset -> SmolVLA fine-tune -> closed-loop eval.
 
 The approved plan lives at `c:\Users\black\.cursor\plans\vla_throw_pipeline_bce6bacc.plan.md`.
 **Do not edit that plan file.** Its todos (`phase0-env`, `phase1-expert`, `phase2-data`, `phase3-train`,
@@ -89,37 +90,61 @@ The approved plan lives at `c:\Users\black\.cursor\plans\vla_throw_pipeline_bce6
 - Scene colors (bin walls, ball colors) are changed **in Python at reset**, not by editing MJCF.
 - Right arm only; the left arm is held at `home` ctrl every step.
 - Do not claim a trained policy exists unless a checkpoint exists.
+- Never let downloads land on `C:` (nearly full). See "Environment" below.
 
 ## Status (last updated 2026-09-29)
 
 | Phase | State | Evidence |
 |---|---|---|
-| 0 Env | **Done** | `uv run python -m pytest -v`: 8/8 pass (7 env/dataset + SmolVLA smoke); `artifacts/phase0_rgb.png` (front and wrist cameras side by side) |
-| 1 Expert | **Done, 87% success** (target 85%), physical grasp (no weld) | `eval_expert.py --n-episodes 100`: 87 success, 9 missed, 3 wrong_bucket, 1 never_grasped; `artifacts/expert/summary.json` + labeled mp4s. Headless `sweep.py 80`: 73/80 |
-| 2 Dataset | Not started | Writer and scripts exist but are unverified against the current env |
-| 3 Train | Not started | `train_smolvla.py` / `train_openpi.py` are dry-run stubs |
-| 4 Eval | **Pretrained inference works; no fine-tuned checkpoint exists** | `tests/test_smolvla_smoke.py` and `eval_policy.py --policy smolvla --checkpoint lerobot/smolvla_base --n-episodes 1` run closed loop (~0.45 s/chunk on the GTX 1660); the base model is untrained on OpenArm, so the arm flails (`never_grasped`). `artifacts/smolvla_smoke/` |
-| Docs | Not started | `PLAN.md` and `README.md` are required deliverables and are still missing (`README.md` is empty) |
+| 0 Env | **Done** | `pytest -v`: 8/8 pass (7 env/dataset + SmolVLA smoke); `artifacts/phase0_rgb.png` |
+| 1 Expert | **Done, 87% success** (target 85%), physical grasp (no weld) | `eval_expert.py --n-episodes 100`: 87 success, 9 missed, 3 wrong_bucket, 1 never_grasped; `artifacts/expert/summary.json` |
+| 2 Dataset | **Pipeline done; 500-demo set NOT collected yet** | Real lerobot v3 dataset writer, `collect_demos.py`, deterministic replay verified (`viz_episode.py --replay`: state diff 0.0, `success`). Datasets on disk: `data/datasets/smoke3` (3 eps), `data/datasets/overfit10` (10 eps) |
+| 3 Train | **Launcher works; only overfit checkpoints exist** | `scripts/train_smolvla.py` runs lerobot's trainer (see "Training"). 100M of 450M params trainable. Speed 2.2-3.5 s/step at batch 8, 4.5 GB allocated (5.7 GB reserved of 6 GB) |
+| 4 Eval | **Overfit gate FAILED: 0/10 on the training seeds** | `checkpoints/overfit10/checkpoints/002000/pretrained_model` (2000 steps, loss 3.0 -> 0.027). Result in `artifacts/overfit10/eval_summary.json`: 9 `never_grasped`, 1 `missed`. Videos show roughly the right motion but heavy twitching. Diagnosis not done, see "Overfit result and next steps". Fine-tuned adapter path is verified to load and run |
+| Docs | Not started | `PLAN.md` and `README.md` are required deliverables (`README.md` is empty) |
 
 Nothing is committed yet (only the initial "Created Repository" commit exists).
+
+## Environment (verified 2026-09-29)
+
+- Python 3.12, torch 2.11 with CUDA 12.8, lerobot 0.6.1, transformers 5.5, mujoco 3.14. GPU: GTX 1660
+  (6 GB, sm_75), which has **no bf16 compute**, so run in fp32. 12 logical CPUs.
+- **C: has ~3 GB free of 223 GB. Nothing may be written to C:.** `HF_HOME` / `UV_CACHE_DIR` set via setx are NOT
+  seen by Cursor terminals, and `TEMP` is on C: by default (video encoding, pytest and pip write there). In **every**
+  new shell run first:
+  `$env:HF_HOME="Z:\hf_cache"; $env:UV_CACHE_DIR="Z:\uv_cache"; $env:TEMP="Z:\tmp"; $env:TMP="Z:\tmp"; $env:TORCH_HOME="Z:\hf_cache\torch"; $env:XDG_CACHE_HOME="Z:\hf_cache\xdg"; $env:MUJOCO_GL="glfw"`.
+  Check C: free space with `[System.IO.DriveInfo]::new('C').AvailableFreeSpace` (`Get-PSDrive` returns nothing/0 and
+  `Get-CimInstance`/`fsutil` fail here). Big C: folders (Cursor sandbox cache, pip cache) are not ours; don't delete.
+- **Video decoding uses pyav, not torchcodec** (torchcodec installs but can't load: no shared FFmpeg; the user chose
+  pyav to avoid a system install). `openarm_vla/data/lerobot_writer.py` sets `VIDEO_BACKEND = "pyav"` and passes it
+  to `create_dataset` / `open_dataset`; the trainer gets `--dataset.video_backend=pyav`. Encoding is AV1 (SVT), a
+  10-episode record takes ~3 min.
+- Long jobs: launch with `Start-Process .venv\Scripts\python.exe ... -RedirectStandardOutput/-Error ... -WindowStyle Hidden`
+  so a killed Cursor terminal doesn't matter (a killed terminal does NOT stop a detached python: kill it explicitly with
+  `Stop-Process`, remember the dataloader workers). Progress bars go to the `-RedirectStandardError` file.
+- rg/Glob skip `.venv`. To read lerobot source, locate it with
+  `uv run python -c "import lerobot,os;print(os.path.dirname(lerobot.__file__))"` and read files by path.
+  Use the installed 0.6.1 source, not memory or old docs (`lerobot.common.*` paths are gone).
 
 ## How to run
 
 ```powershell
 cd "Z:\1 Github Projects\Robotics\Open Arm Folding"
 $env:MUJOCO_GL = "glfw"          # Windows offscreen GL. Linux: egl or osmesa
-uv sync --extra train            # Python 3.12; openarm_vla editable + CUDA torch (cu128) + lerobot[smolvla]==0.6.1
-# HF_HOME=Z:\hf_cache is set persistently (setx): C: has no room for the ~3 GB of weights
+uv sync --extra train            # openarm_vla editable + CUDA torch (cu128 index) + lerobot[smolvla,dataset]==0.6.1
 
-uv run python -m pytest -v                                                   # env + dataset tests
+uv run python -m pytest -v
+uv run python scripts/collect_demos.py --n-success 10 --max-attempts 30 --out data/datasets/NAME   # --out must NOT exist
+uv run python scripts/dataset_stats.py --dataset data/datasets/NAME
+uv run python scripts/viz_episode.py --dataset data/datasets/NAME --episode 0 --replay
+uv run python scripts/train_smolvla.py --dataset-root data/datasets/NAME --output-dir checkpoints/RUN --steps 2000 --warmup-steps 100   # output dir must NOT exist
+uv run python scripts/eval_policy.py --policy smolvla --checkpoint checkpoints/RUN/checkpoints/002000/pretrained_model --seeds-file data/datasets/NAME/openarm_seeds.json --video-dir artifacts/RUN
 uv run python scripts/eval_expert.py --n-episodes 20 --video-dir artifacts/expert
-uv run python artifacts/probe.py 40                                          # fast headless expert check
 uv run python scripts/eval_policy.py --policy smolvla --checkpoint lerobot/smolvla_base --n-episodes 1 --video-dir artifacts/smolvla_smoke
 uv run python scripts/vla_viewer.py            # live MuJoCo viewer; type instructions in the terminal (r = reset, q = quit)
 ```
 
-Always run from the **repo root**. `video_dir` / `out` paths are relative, so running from `scripts/`
-writes to `scripts/artifacts/...`. Videos from such a run exist there now and may predate the current code.
+Always run from the **repo root**: `video_dir` / `out` paths are relative.
 
 ## Codebase map
 
@@ -131,25 +156,21 @@ openarm_vla/
   config.py                     EnvConfig dataclass + load_yaml
   env/throw_env.py              ThrowEnv (Gymnasium): reset randomization, physics_step, contact-based holding(), obs, sim-state save/restore
   env/success.py                ball_in_bin, EpisodeTracker, FailureMode taxonomy
-  expert/ik.py                  6-D damped-least-squares IK on a body-fixed point; jacobian_velocity
-  expert/ballistic.py           release_velocity (closed-form projectile), quintic_interp
-  expert/throw_expert.py        ThrowExpert: open-loop FSM plan + shooting-method aim correction
-  data/lerobot_writer.py        npz + mp4 + meta/info.json (NOT real LeRobot parquet yet)
+  expert/                       ik.py (DLS IK), ballistic.py, throw_expert.py (FSM plan + shooting aim); see AGENT_HANDOFF.md
+  data/lerobot_writer.py        FEATURES, create_dataset(root), open_dataset(root), VIDEO_BACKEND (real lerobot v3 dataset)
   policies/base.py              Policy protocol: predict_chunk(obs) -> (T, 8)
   policies/dummy.py             DummyPolicy (hold pose, gripper open), ExpertPolicy wrapper
-  policies/smolvla.py           SmolVLAAdapter (lerobot 0.6.1). Base checkpoint: features overridden to state 15 / action 8
-                                (SmolVLA pads to 32), no norm stats (SO-100 stats are 6-D), fp32 (no bf16 on Turing).
-                                A checkpoint with an 8-D action loads its own processors (untested until Phase 3)
+  policies/smolvla.py           SmolVLAAdapter (lerobot 0.6.1), see "How inference is wired"
   policies/openpi_pi0.py        OpenPiAdapter (raises NotImplementedError after import)
 scripts/                        eval_expert, collect_demos, dataset_stats, viz_episode, eval_policy, vla_viewer, train_smolvla, train_openpi
 configs/                        env.yaml, expert.yaml, dataset.yaml, train_smolvla.yaml, eval.yaml
 tests/                          test_env.py, test_dataset.py, test_smolvla_smoke.py (skipped without lerobot/CUDA)
-artifacts/                      gitignored outputs + throwaway diagnostic scripts (see below)
+artifacts/                      gitignored outputs + throwaway diagnostic scripts (listed in AGENT_HANDOFF.md)
 ```
 
 ## Interfaces (locked)
 
-- Control: **50 Hz**, 20 physics substeps, dt = 0.001.
+- Control: **50 Hz**, 20 physics substeps, dt = 0.001. Episodes cap at 400 steps.
 - Action (8): absolute position targets for right joints 1-7 + `right_finger1_ctrl`, clipped to ctrlrange.
 - State (15): right arm qpos (7) + qvel (7) + finger joint qpos (1).
 - Obs: `image_front` (`frontcam`), `image_wrist` (`camera_wrist_right`), both 256x256 RGB; `state`; `instruction` string.
@@ -157,94 +178,90 @@ artifacts/                      gitignored outputs + throwaway diagnostic script
   `dropped_during_grasp`, `missed`, `wrong_bucket`, `timeout`.
 - VLA inference: physics paused during `predict_chunk`; chunk 16, replan every 8.
 
-## Decisions taken (and why)
+## Key decisions (details and measurements in AGENT_HANDOFF.md)
 
-1. **Weld ruling: no weld. The grasp is purely physical (friction), deviating from AGENT_HANDOFF.md.**
-   `physics_step` only writes ctrl and steps; the `grasp_right_*` welds stay disabled. "Grasping" is
-   `ThrowEnv.holding(ball)`: both finger bodies (`openarm_right_ee_inner_finger` / `_outer_finger`) touch the ball.
-   Measured on 40 seeds: the ball was still held at the release tick in 36/37 grasped episodes with no tuning
-   (40 g ball, fingertip condim 4 / friction 1.0, finger kp=10 squeezes well above throw loads). Success was 26/40
-   vs 25/40 with the old weld assist, so the weld bought nothing. Demos and VLA eval use identical mechanics, and
-   `dropped_during_grasp` is reachable again.
-2. **Gripper polarity:** finger joint `0` = closed (tips ~9 mm apart), `-0.7854` = fully open (~15 cm).
-   The original scaffold had this inverted.
-3. **Grasp point** = `openarm_right_ee_base_link` origin + (0, 0, -0.145) in the EE frame. Measured from the
-   collision meshes: the palm collider reaches z = -0.111, the fingertips are inward hooks ending at ~-0.155, and the
-   open finger gap is only wider than the ball below ~-0.115. The approach must be **fully open** (a partial
-   opening leaves the hooks narrower than the 6 cm ball).
-4. **Only the grasp welds are disabled at reset.** Disabling all equalities also killed the finger mimic joint,
-   so the outer finger never opened.
-5. **Ball placement is rejection-sampled** until no ball touches anything but the table (the jitter could overlap
-   balls, and the `home` wrist sits next to the ball set).
-6. **Expert plan** (`throw_expert.py`), all segments quintic and sampled exactly at 50 Hz:
-   1. home, with the elbow (joint 4) raised to 2.4 first (a direct path sweeps the balls)
-   2. `throw_ready`, gripper closed during transit
-   3. hover (open)
-   4. descend
-   5. close for 10 ticks
-   6. lift
-   7. wind-up
-   8. throw, ending at `q_rel` with joint velocity `qd = J^+ v`; gripper commanded open `release_lead` (1) tick
-      before `q_rel` (the fingers are slow; 2 ticks was worse)
-   9. coast at `qd` for `coast_ticks` (6) so the opening fingers keep pace with the ball, then decelerate
-   10. hold
+1. **No weld:** the grasp is purely physical (friction); `grasp_right_*` welds stay disabled. Demos and VLA eval
+   use identical mechanics.
+2. **Gripper polarity:** finger joint `0` = closed, `-0.7854` = fully open.
+3. **Color grounding:** ball colors, bin colors, target ball and target bin are all sampled **independently**
+   (25 ball/bin pairs), so the policy must read the text. Bin walls are recolored in Python so color is visible.
+   From `frontcam` a landed ball is hidden by the walls; `ball_in_bin` is authoritative, not the video.
+4. YAML: write floats like `1.0e-4`. PyYAML parses `1e-4` as a string.
 
-   Sweep (40 seeds): lead 0 -> 29, lead 1 -> 32, lead 2 -> 26 (coast 0). On 80 seeds: lead 1/coast 0 -> 61,
-   lead 1/coast 6 -> 64. `aim_iters` 14 instead of 8: +1, not worth the planning time.
-7. **Wrist yaw per episode.** Grasp yaw maximizes finger clearance from neighbor balls; throw yaw points the
-   gripper's open side (local ±x) along the throw heading so the ball does not leave through a finger. Each IK chain
-   restarts from `throw_ready` and tries candidate yaws until the position residual is < 5 mm. If no yaw reaches,
-   the chain retries with `fallback_rot_weight` (0.01, a tilted wrist). This fixed the far-corner ball (XML body
-   `ball_green`, x=0.33, y=-0.35), unreachable straight-down from the `throw_ready` branch (joints 1 and 5 hit limits;
-   a straight-down solution exists only on a different arm branch), and also the throw-IK misses: 64 -> 73/80.
-   Fallback 0.0 -> 71/80, 0.003 -> 70/80.
-8. **Aiming by shooting.** MuJoCo is deterministic, so the expert simulates the pre-throw part once, snapshots
-   (`get_sim_state` / `set_sim_state`, `mjSTATE_INTEGRATION`), then replays the throw up to
-   `aim_iters` times. It measures where the ball descends through `AIM_Z` = 0.16 (rim + radius) and updates
-   the aim point with a 2-D Broyden (secant) step. Plain fixed-point iteration oscillated (landing/aim gain ~1.7).
-   Planning costs ~0.4 s/episode.
-9. **Color grounding:** ball colors and bin colors are shuffled **independently**, and the target ball color and
-   target bin color are sampled independently. So "throw the green ball into the blue bucket" is normal; ball
-   color == bin color only happens by chance. Bin walls are recolored to the floor color so color is visible.
-10. YAML: write floats like `1.0e-4`. PyYAML parses `1e-4` as a string.
-11. **Bin jitter is rejection-sampled** so no two bins are closer (Chebyshev) than `BIN_MIN_SEP` = 0.10, the MJCF's
-    nominal spacing. Bins are 0.14 m across their walls, so the old independent ±4 cm jitter pushed a neighbour's wall
-    across the target opening; balls landed dead centre (planned error < 1 cm) and rolled away on top of it.
-    Fix: 26 -> 29/40.
+## How inference is wired (keep compatible)
 
-## Known issues / next steps (in priority order)
+- `SmolVLAAdapter(checkpoint)` feeds `observation.images.image_front`, `observation.images.image_wrist`
+  (3x256x256, float 0..1), `observation.state` (15) and `task` (string) through lerobot's preprocessor, calls
+  `predict_action_chunk`, then the postprocessor, and returns the first 16 of the model's 50 steps as (16, 8).
+- **Base checkpoint** (6-D SO-100 action): the adapter overrides the config features to 15/8 (SmolVLA pads to 32)
+  and uses processors with no norm stats. That is why base-model actions are meaningless on OpenArm.
+- **Fine-tuned checkpoint** (8-D action): the adapter loads the checkpoint's own processors via
+  `make_pre_post_processors(cfg, ckpt, preprocessor_overrides={"device_processor": {"device": ...}})`.
+  Verified to load and run on the bench and overfit checkpoints. The checkpoint's preprocessor carries the
+  `rename_observations_processor` (image_front -> camera1, image_wrist -> camera2), so the adapter keys are unchanged.
+  **Unresolved:** the checkpoint config still declares `observation.state` shape [6] (inherited from smolvla_base) although
+  data/stats are 15-D; it trains and runs without errors but has not been checked for correct normalization.
+- So the dataset **must** use exactly these keys: `observation.images.image_front`, `observation.images.image_wrist`,
+  `observation.state` (15, float32), `action` (8, float32), plus the task string.
 
-1. **Remaining expert failures (13/100), stopped here on diminishing returns.**
-   - `missed` / `wrong_bucket`: Broyden aim does not converge on some seeds; the landing is still a jagged
-     function of aim (fingertip contact right after release). A few extra aim iterations gained only 1/80.
-   - `never_grasped`: the far-corner ball, a few seeds still leave 3-6 cm IK residual even with the tilt fallback.
-     A real fix is planning on a second arm branch (joint 1 around +1.24), with its own collision-free transit.
-   - Non-target balls occasionally get knocked off the table (seen in a success video); harmless to the metric.
-2. **Wrong-colored basket report: explained, not a bug.** `eval_expert.py` filenames now carry
-   `{ball}-into-{bin}` (e.g. `ok_000_success_green-into-purple.mp4`), and ball/bin colors are independent
-   (decision 9). From `frontcam` a landed ball is hidden behind the 13 cm walls and the front bins occlude the
-   back row, so the video alone cannot show which bin holds the ball; `ball_in_bin` is authoritative.
-   The old reported videos in `scripts/artifacts/expert/` and the unlabeled `artifacts/expert/*_missed.mp4` /
-   `ok_010_success.mp4` predate this code. `eval_policy.py` does not label its videos yet.
-3. Phase 2: `collect_demos.py` smoke (3 episodes), then the full N=500. Run `dataset_stats.py` to confirm many
-   ball/bin color pairs, and `viz_episode.py`. Upgrade the writer to real LeRobot v2 parquet if lerobot is installed.
-   Note `collect_demos.py` records `obs` *before* each action (correct), and re-samples the instruction template
-   (the env's own instruction differs; pick one source).
-4. Phase 3/4: see `AGENT_HANDOFF.md` sections "Phase 3" and "Phase 4". `eval_policy.py` goes through `env.step`,
-   so the policy gets the same physical grasp as the demos.
-5. Write `PLAN.md` (architecture, locked decisions, phase results with numbers, weld ruling, chunking tradeoff,
-   what was not tested, Phase 5 skipped) and `README.md` (install, data, train both backends, eval, GL notes).
-6. Delete the throwaway `artifacts/*.py` diagnostics before committing (the folder is gitignored anyway).
+## Phase 2/3 results (done; do not redo)
 
-## Diagnostic scripts (throwaway, in `artifacts/`, run from repo root)
+Done and verified: deps -> lerobot-format writer -> `collect_demos.py` -> replay check -> training launcher ->
+benchmark -> overfit run.
 
-- `probe.py N`: headless expert over seeds 0..N-1: outcome, planned error, aim log, IK residuals, planning time.
-- `grasp_diag.py 1,2,3`: grasp point vs ball (EE frame), finger angles, and contacts at the close tick.
-- `release_diag.py 1,2,3`: ball velocity vs nominal at release, and contacts in the ticks after release.
-- `trace.py 1,2,3`: first robot-ball contact during the approach.
-- `snap.py SEED STEP,STEP`: close-up renders around the target ball to `artifacts/snap.png`.
-- `color_check.py`: checks rendered colors and landing bin vs the instruction.
-- `probe2.py` / `probe3.py`: finger mesh gap profile; joint-path collision check.
-- `sweep.py N key=val ...`: outcome counts over seeds 0..N-1 with `ExpertConfig` overrides (run several in parallel).
-- `grip_diag.py N`: when the physical hold starts / is lost relative to the release tick.
-- `land_diag.py 1,2,3`: ball position relative to the target bin and its contacts after release.
+**Dataset**
+- `collect_demos.py` records through `LeRobotDataset` (`create` / `add_frame` / `save_episode` / `clear_episode_buffer` /
+  `finalize`). It stores obs *before* each action, keeps only `success` episodes (failed frames are cleared; tested in
+  `tests/test_dataset.py`), uses `env.task["instruction"]` as the task string (single source; the old template
+  re-sampling is gone) and writes `<out>/openarm_seeds.json` (`episode_index, seed, instruction, ball_color, bin_color`).
+  `--out` must not exist. For parallel runs give each process its own `--out` and `--seed-offset`.
+- Episodes are ~222 steps (not 400); 10 episodes ~2.2k frames. Expert success in collection was 10/14 attempts.
+- `viz_episode.py --replay` re-runs the stored actions from the stored seed: state diff 0.0, result `success`,
+  video-vs-render pixel diff ~0.008. `dataset_stats.py` prints lengths, action stats and the color-pair histogram.
+- Merging parallel datasets: `lerobot.datasets.aggregate.aggregate_datasets(repo_ids, aggr_repo_id, roots=, aggr_root=)`
+  exists (not yet used); also concatenate the `openarm_seeds.json` files and shift `episode_index`.
+
+**Training** (`scripts/train_smolvla.py` + `configs/train_smolvla.yaml`, runs `lerobot.scripts.lerobot_train` in-process)
+- Fine-tunes `lerobot/smolvla_base`: `freeze_vision_encoder` / `train_expert_only` are true, so 100M of 450M params train.
+- Windows workarounds already in the launcher: (1) `--policy.path` is a local `snapshot_download` dir, because lerobot
+  wraps it in `Path` and `lerobot/smolvla_base` becomes `lerobot\smolvla_base`; (2) `lt.make_policy` is wrapped with
+  `.float()` (the VLM loads as bf16, the 1660 has no bf16 compute); (3) `lt.update_last_checkpoint` is a no-op (needs
+  Windows symlink privilege); (4) `--rename_map` maps image_front/image_wrist to camera1/camera2 (required, else the
+  visual-feature check fails); (5) scheduler warmup/decay are overridden (defaults 1000/30000 are wrong for short runs).
+- Only one checkpoint is saved (`save_freq = steps`). Output dir must not exist. Model load can take minutes cold.
+- Measured: 2.2-3.5 s/step at batch 8 (overfit run averaged ~2.4 s): 2000 steps ~80 min, 20k steps ~12-19 h.
+
+**Overfit run** (10 eps, 2000 steps, warmup 100, lr 1e-4): loss 2.98 (step 10) -> 0.55 (100) -> 0.11 (800) -> 0.076
+(1000) -> 0.027 (2000), still falling. Eval on the 10 training seeds: **0 success**, 9 `never_grasped`, 1 `missed`
+(orange->purple, throw error 0.21). Videos in `artifacts/overfit10/`: right general motion, too much twitching.
+The gate (>= 5/10) failed. The 500-demo collection has NOT been started; don't start it or the long run yet.
+
+### Overfit result: next steps (unresolved; do these before scaling)
+
+Hypotheses, ranked: (1) flow matching resamples noise on every `predict_chunk`, so replanning every 8 steps hops
+between trajectories, and the grasp needs cm precision (gripper opens ~15 cm around a 6 cm ball); (2) closed-loop
+compounding error on states the 10 demos never covered; (3) only 10 scenes with a frozen vision encoder; (4) the 6-D
+declared state, and an unverified harness.
+
+1. **Harness control:** run `ExpertPolicy` (`policies/dummy.py`) through `eval_policy.py`'s chunk-16 / replan-8 loop. It
+   should get ~85%; if not, the harness is the bug, not the model.
+2. **Offline check:** feed the 10 training episodes' recorded observations to the checkpoint and compare predicted
+   16-step chunks with the dataset actions (no simulator). Small error => closed-loop/noise problem; large => not learned.
+3. **Inference-only fixes on the same checkpoint** (no retrain): fixed noise reused across replans, replan every 16-25
+   steps, or temporal ensembling of overlapping chunks. Also check state normalization (6-D vs 15-D config).
+4. Only then retrain (longer than 2000 steps, more episodes, or a state-shape fix) and compare with the 0/10 baseline.
+   Do the 500-demo collection and the 10k-20k-step fine-tune only once the pipeline is sound (12-19 h on this card; a
+   cloud A100 ~2-4 h). The user decides whether the overfit gate is waived.
+
+**After the first fine-tuned checkpoint** (not before), test language grounding within throwing before adding
+tasks: hold out some ball/bin color pairs from training and test on them, try phrasings outside the 5 templates,
+and change only the text on an identical seed to check the robot targets a different ball or bin. Only then add
+a clearly different second task (scenes exist in `v2/pedestal/`: valve, bottle, peg_socket, move_puck,
+articulated, balance, catch). Each needs its own scripted expert and success check; that's the main cost.
+
+## Other open items
+
+- Write `PLAN.md` (architecture, locked decisions, phase results with numbers, weld ruling, chunking tradeoff,
+  what was not tested, Phase 5 skipped) and `README.md` (install, data, train, eval, GL notes, HF_HOME).
+- `eval_policy.py` does not label its videos with `{ball}-into-{bin}` yet (`eval_expert.py` does).
+- Delete the throwaway `artifacts/*.py` diagnostics before committing (the folder is gitignored anyway).
