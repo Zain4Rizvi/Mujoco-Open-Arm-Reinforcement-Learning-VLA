@@ -1,0 +1,23 @@
+---
+description: Hard constraints for the OpenArm VLA repo (disk, physics, arm, training gate)
+alwaysApply: true
+---
+
+# OpenArm — do not violate
+
+- Do not change `main.py`, actuator gains, or scene physics in `v2/`. Recolor bins and balls in Python at reset.
+- Right arm only. Left arm stays at `home` ctrl every step.
+- fp32 only (GTX 1660, no bf16). Video backend is `pyav`, not torchcodec.
+- Nothing may be written to `C:` (~3 GB free). `setx` vars are invisible to Cursor shells, and `TEMP` defaults to `C:`. First line of every new shell:
+
+`$env:HF_HOME="Z:\hf_cache"; $env:UV_CACHE_DIR="Z:\uv_cache"; $env:TEMP="Z:\tmp"; $env:TMP="Z:\tmp"; $env:TORCH_HOME="Z:\hf_cache\torch"; $env:XDG_CACHE_HOME="Z:\hf_cache\xdg"; $env:MUJOCO_GL="glfw"`
+
+- At most two demo collectors, and never during a GPU job. Windows commit limit is ~38 GB; a third AV1 encode OOMs.
+- Long jobs: `Start-Process .venv\Scripts\python.exe ... -RedirectStandardOutput/-Error ... -WindowStyle Hidden`. Killing the terminal does not stop them. Abort with `Stop-Process`, including dataloader workers.
+- Do not claim a policy works without an `eval_summary.json`.
+- Do not collect `data/datasets/train500` or start Stage B. The Stage A gate failed; the user decides. Numbers live in `.cursor/rules/training.mdc`.
+- Do not edit `c:\Users\black\.cursor\plans\vla_throw_pipeline_bce6bacc.plan.md`. Mark its existing todos (`phase0-env` through `docs`); never recreate them.
+- Before editing the env, policies, data, or scripts, read `.cursor/rules/project.mdc`. Expert mechanics: `AGENT_HANDOFF.md`.
+- After a training or eval stage, update `.cursor/rules/training.mdc`. Do not put status back into `CLAUDE.md`.
+
+Repo root: `Z:\1 Github Projects\Robotics\Open Arm Folding`. Command paths are relative to it.

@@ -46,7 +46,7 @@ def main():
     states = np.asarray(sub["observation.state"], np.float32)
     actions = np.asarray(sub["action"], np.float32)
     env = ThrowEnv(EnvConfig.from_yaml(REPO_ROOT / "configs" / "env.yaml"), render_mode="rgb_array")
-    obs, _ = env.reset(seed=row["seed"])
+    obs, _ = env.reset(seed=row["seed"], options={"instruction": row["instruction"]})
     assert env.task["instruction"] == task, (env.task["instruction"], task)
     video0 = ds[lo]["observation.images.image_front"].permute(1, 2, 0).numpy()
     print("frame-0 mean |env render - decoded video|:", float(np.abs(obs["image_front"] / 255.0 - video0).mean()))

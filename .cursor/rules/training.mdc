@@ -1,0 +1,44 @@
+---
+description: SmolVLA training status and the Stage A gate. Read before collecting demos, training, evaluating checkpoints, or proposing the 500-demo run.
+alwaysApply: false
+---
+
+# Training status (2026-10-01)
+
+Stage A is finished. The gate failed. Do not collect `train500`.
+
+| Run | Scenes | Success | Grasp | Closest |
+|---|---|---|---|---|
+| overfit10 baseline | 20 val30 | 0/20 | 15% | 5.8 cm |
+| stageA step 1000 | same 20 | 0/20 | 0% | 9.4 cm |
+| stageA step 2000 | same 20 | 0/20 | 5% | 8.1 cm |
+| stageA `best/` | same 20 | 1/20 | 5% | 8.4 cm |
+
+Gate required a clearly higher grasp rate and a lower closest distance than the baseline. `best/` is worse on both. The 1 success does not pass it.
+
+Early stop at step 3000: val loss best 0.222 at step 2000, then flat/up (0.246, 0.262, 0.253, 0.257) while train loss fell to ~0.03. `checkpoints/stageA/early_stop.txt`. Videos and `eval_summary.json` under `artifacts/stageA/{step_001000,step_002000,best}/` and `artifacts/baseline_overfit10_val20/`.
+
+## Already measured — do not redo
+
+Overfit10 (10 demos, 2000 steps), on its own seeds: default loop 1/10 success, 3/10 grasped, 3.1 cm. Replan-16 with fixed noise: 0/10, 3/10, 3.3 cm. Inference tricks do not help. Offline, end-effector error vs the demo is 1.9 cm (3.5–4 cm at the start); replan jump ~3 cm vs 0.8 cm per demo step. The model learns the motion and misses the grasp. 10-episode evals are too noisy to rank checkpoints.
+
+State normalization is 15-D. The `[6]` in `config.json` is cosmetic.
+
+## Data on disk
+
+- `data/datasets/train50` — 50 eps, 20 pairs, 10 templates. Replay of ep 7: state diff 0.0, success.
+- `data/datasets/val30` — 30 eps. `eval20_seeds.json` / `eval10_seeds.json` are its first rows. No seed overlap with train, no held-out pair.
+- `data/datasets/train500` — not collected.
+
+Phases 0–1 are done (expert 87/100, `artifacts/expert/summary.json`). Docs (`PLAN.md`, `README.md`) are not started.
+
+## If the user explicitly approves a next run
+
+Do not launch this unprompted.
+
+- Stage B: collect `train500` (may reuse `train50` as the first 50; seed offset ≥ 100000). Confirm no seed shared with `val30` and no `HELDOUT_PAIRS`. At most two collectors, no GPU job at the same time. ~40–50 min with 4 processes is the old estimate; cap concurrency at 2 on this machine.
+- Train: `--dataset-root data/datasets/train500 --output-dir checkpoints/stageB --steps 20000 --warmup-steps 500`, `save_freq 2500`, `val_every 500`, `min_steps 4000`, `patience_evals 6`. Ask the user before changing the sleep timeout. Resume is not wired; add `--resume-from` only if a run actually dies.
+- Then `eval_checkpoints.py` on the same val20 seeds, plus `best/` on 50 fresh seeds (`--n-episodes 50 --seed 5000`) that are not in train or the val20 list and are not held-out pairs.
+- Held-out pair / held-out template / same-seed text-swap tests come after that, not before.
+
+Likely reasons the 50-demo gate failed, if the user asks: frozen vision encoder, too little data, grasp needs centimeter precision. Report numbers; do not start a retrain to test those unless asked.

@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from openarm_vla.config import EnvConfig, load_yaml
-from openarm_vla.constants import REPO_ROOT
+from openarm_vla.constants import HELDOUT_PAIRS, REPO_ROOT
 from openarm_vla.data import create_dataset
 from openarm_vla.env.throw_env import ThrowEnv
 from openarm_vla.expert.throw_expert import ExpertConfig, ThrowExpert
@@ -45,6 +45,8 @@ def main():
             break
         ep_seed = int(rng.integers(0, 2**31 - 1))
         obs, _ = env.reset(seed=ep_seed)
+        if (env.task["ball_color"], env.task["bin_color"]) in HELDOUT_PAIRS:
+            continue
         expert.reset(env)
         term = trunc = False
         inf = {}

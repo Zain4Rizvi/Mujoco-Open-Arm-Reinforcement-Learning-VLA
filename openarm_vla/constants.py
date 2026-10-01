@@ -32,13 +32,28 @@ GRASP_OFFSET = (0.0, 0.0, -0.145)
 HOME_CTRL_LEFT = (0.0, 0.0, 0.0, 1.570796, 0.0, 0.0, 0.0, 0.0)
 THROW_READY_RIGHT = (-0.720369, 2.27095, 0.290977, 1.90389, 1.23759, 0.780000, 0.558776)
 
-INSTRUCTION_TEMPLATES = (
+TRAIN_TEMPLATES = (
     "throw the {ball} ball into the {bin} bucket",
     "throw the {ball} ball into the {bin} bin",
     "put the {ball} ball in the {bin} bin",
     "toss the {ball} ball into the {bin} bucket",
     "place the {ball} ball into the {bin} bucket",
+    "throw the {ball} ball in the {bin} bin",
+    "toss the {ball} ball in the {bin} bin",
+    "pick up the {ball} ball and throw it into the {bin} bucket",
+    "grab the {ball} ball and toss it in the {bin} bin",
+    "get the {ball} ball into the {bin} bucket",
+    "throw the {ball} ball to the {bin} bucket",
+    "put the {ball} ball into the {bin} bucket",
 )
+# Never used in training; reserved for language generalization tests.
+HELDOUT_TEMPLATES = (
+    "could you lob the {ball} ball into the {bin} container",
+    "the {ball} ball goes in the {bin} bin",
+    "i want the {ball} ball in the {bin} bucket",
+)
+# (ball color, bin color) pairs never collected for training/validation.
+HELDOUT_PAIRS = (("red", "blue"), ("green", "orange"), ("purple", "red"))
 
 STATE_DIM = 15  # 7 qpos + 7 qvel + 1 gripper
 ACTION_DIM = 8  # 7 arm + 1 gripper

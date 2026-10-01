@@ -5,3 +5,10 @@ steps: 20000
 warmup_steps: 1000
 lr: 1.0e-4
 num_workers: 2
+save_freq: 1000
+val_dataset_root: data/datasets/val30
+val_every: 250
+val_frames: 256
+min_steps: 1500
+patience_evals: 4
+min_rel_improvement: 2.0e-2

@@ -16,7 +16,7 @@ from openarm_vla.constants import (
     GRIP_CLOSE_CMD,
     GRIPPER_OPEN,
     HOME_CTRL_LEFT,
-    INSTRUCTION_TEMPLATES,
+    TRAIN_TEMPLATES,
     N_SUBSTEPS,
     REPO_ROOT,
     RIGHT_ACTUATORS,
@@ -176,7 +176,7 @@ class ThrowEnv(gym.Env):
             self._light_diff0 * (1.0 + self._rng.uniform(-0.15, 0.15)), 0.2, 1.0
         )
 
-        tmpl = str(options.get("instruction") or self._rng.choice(INSTRUCTION_TEMPLATES))
+        tmpl = str(options.get("instruction") or self._rng.choice(TRAIN_TEMPLATES))
         instruction = tmpl.format(ball=target_ball, bin=target_bin_color)
 
         self.data.ctrl[self._left_act] = HOME_CTRL_LEFT

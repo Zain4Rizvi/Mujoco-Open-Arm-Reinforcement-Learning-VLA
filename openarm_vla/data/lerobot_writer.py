@@ -36,9 +36,9 @@ def create_dataset(root: str | Path, repo_id: str = "local/openarm_throw"):
     )
 
 
-def open_dataset(root: str | Path):
-    """Read an existing dataset (repo_id is `local/<dir name>`)."""
+def open_dataset(root: str | Path, **kwargs):
+    """Read an existing dataset (repo_id is `local/<dir name>`); kwargs go to LeRobotDataset."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     root = Path(root)
-    return LeRobotDataset(f"local/{root.name}", root=root, video_backend=VIDEO_BACKEND)
+    return LeRobotDataset(f"local/{root.name}", root=root, video_backend=VIDEO_BACKEND, **kwargs)

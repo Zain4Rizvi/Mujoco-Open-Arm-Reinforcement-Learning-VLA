@@ -1,0 +1,59 @@
+---
+description: OpenArm throw pipeline — goal, locked interfaces, dataset keys, SmolVLA wiring, and commands. Read before editing the env, policies, data, or scripts.
+alwaysApply: false
+---
+
+# Project
+
+Instruction like "throw the red ball into the blue bucket" → fine-tuned SmolVLA drives the right OpenArm (MuJoCo) to grasp that ball and throw it into that floor bin. The policy sees cameras, its own joints, and the text. It never sees ball or bin positions (the expert does).
+
+Pipeline: Gymnasium env → scripted expert → lerobot dataset → SmolVLA fine-tune → closed-loop eval.
+
+## Locked interface
+
+- 50 Hz, 20 physics substeps, dt = 0.001. Episodes cap at 400 steps (~222 in demos).
+- Action (8): absolute targets for right joints 1–7 + `right_finger1_ctrl`, clipped to ctrlrange.
+- State (15): right qpos (7) + qvel (7) + finger qpos (1).
+- Obs: `image_front` (`frontcam`), `image_wrist` (`camera_wrist_right`), 256×256 RGB; `state`; `instruction`.
+- Success: target ball COM inside the target bin for 0.5 s. Failures: `never_grasped`, `dropped_during_grasp`, `missed`, `wrong_bucket`, `timeout`.
+- Inference: physics paused during `predict_chunk`. Chunk 16, replan every 8. Leave that loop alone.
+- Gripper: finger joint `0` = closed, `-0.7854` = fully open. Grasp is friction only; `grasp_right_*` welds stay disabled.
+- Colors of balls, bins, target ball, and target bin are sampled independently (25 pairs). A landed ball is hidden from `frontcam`; `ball_in_bin` is authoritative.
+- YAML floats must be `1.0e-4`. PyYAML reads `1e-4` as a string.
+- Dataset keys, exact: `observation.images.image_front`, `observation.images.image_wrist`, `observation.state` (15, float32), `action` (8, float32), plus the task string.
+- `eval_policy.py --seeds-file` must reset with the stored instruction: `env.reset(seed=s, options={"instruction": row["instruction"]})`. Template list changes do not change the scene, but they do change which phrase an old seed draws.
+
+## Inference
+
+`SmolVLAAdapter` feeds those keys (images float 0..1) through lerobot's preprocessor, `predict_action_chunk`, then the postprocessor, and returns the first 16 of 50 steps as `(16, 8)`.
+
+- Base `lerobot/smolvla_base` is 6-D SO-100. The adapter forces 15/8 features and empty norm stats, so base actions are meaningless here.
+- A fine-tuned checkpoint loads its own processors, including `rename_observations_processor` (image_front → camera1, image_wrist → camera2). Adapter keys stay the same.
+- `config.json` still says `observation.state` shape `[6]`. Stats are 15-D and normalization is correct. Do not "fix" the 6.
+
+## Map
+
+`main.py` passive viewer (do not change). Scene: `v2/pedestal/throw_multi_scene.xml`. Code: `openarm_vla/` (`constants.py`, `env/throw_env.py`, `env/success.py`, `expert/`, `data/lerobot_writer.py`, `policies/smolvla.py`). Scripts: `scripts/`. Config: `configs/`. `artifacts/` is gitignored.
+
+`collect_demos.py`: obs before action, success episodes only, task string from `env.task["instruction"]`, writes `openarm_seeds.json`. `--out` must not already exist. Parallel runs need their own `--out` and `--seed-offset`. Merge with `lerobot.datasets.aggregate.aggregate_datasets`, then concatenate seeds and shift `episode_index`.
+
+`train_smolvla.py` runs lerobot 0.6.1 in-process. `freeze_vision_encoder` and `train_expert_only` are true (~100M of 450M). Windows patches already in the launcher: local `snapshot_download` for `--policy.path`, `.float()` because the VLM loads bf16, `update_last_checkpoint` is a no-op, `--rename_map` to camera1/camera2, scheduler warmup/decay overridden. Output dir must not exist. ~2.8 s/step at batch 8. Checkpoints are ~2.5 GB; drop `training_state/` on all but the newest.
+
+rg/Glob skip `.venv`. Read installed lerobot 0.6.1 from disk (`lerobot.common.*` is gone).
+
+## Commands
+
+```powershell
+uv run python -m pytest -v
+uv run python scripts/collect_demos.py --n-success 10 --max-attempts 30 --out data/datasets/NAME
+uv run python scripts/dataset_stats.py --dataset data/datasets/NAME
+uv run python scripts/viz_episode.py --dataset data/datasets/NAME --episode 0 --replay
+uv run python scripts/train_smolvla.py --dataset-root data/datasets/NAME --output-dir checkpoints/RUN --steps 2000 --warmup-steps 100
+uv run python scripts/eval_policy.py --policy smolvla --checkpoint checkpoints/RUN/checkpoints/002000/pretrained_model --seeds-file data/datasets/NAME/openarm_seeds.json --video-dir artifacts/RUN
+uv run python scripts/eval_checkpoints.py --run checkpoints/RUN --seeds-file data/datasets/val30/eval20_seeds.json --out artifacts/RUN --baseline artifacts/baseline_overfit10_val20/eval_summary.json
+uv run python scripts/plot_training.py --run checkpoints/RUN --evals artifacts/RUN
+```
+
+Set the env vars in `constraints.mdc` first. `uv sync --extra train` for a fresh machine.
+
+Held-out, already in `constants.py`: `HELDOUT_PAIRS` red/blue, green/orange, purple/red. `HELDOUT_TEMPLATES` (3) vs `TRAIN_TEMPLATES`. Language tests wait until a policy can grasp. `PLAN.md` and `README.md` are still unwritten.
