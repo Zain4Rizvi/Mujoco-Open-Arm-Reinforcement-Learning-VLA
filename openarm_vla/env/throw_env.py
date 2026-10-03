@@ -63,7 +63,7 @@ class ThrowEnv(gym.Env):
         self._finger_bodies = {
             int(self.model.body(n).id) for n in ("openarm_right_ee_inner_finger", "openarm_right_ee_outer_finger")
         }
-        self._cam_front = int(self.model.camera("frontcam").id)
+        self._cam_front = int(self.model.camera("headcam").id)
         self._cam_wrist = int(self.model.camera("camera_wrist_right").id)
         self._ball_body = {c: int(self.model.body(f"ball_{c}").id) for c in COLORS}
         self._ball_geom = {c: int(self.model.geom(f"ball_{c}_geom").id) for c in COLORS}

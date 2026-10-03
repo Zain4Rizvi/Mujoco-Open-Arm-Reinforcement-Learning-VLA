@@ -26,10 +26,6 @@ def load_policy(name: str, checkpoint: str, expert: ThrowExpert):
         from openarm_vla.policies.smolvla import SmolVLAAdapter
 
         return "policy", SmolVLAAdapter(checkpoint)
-    if name == "openpi":
-        from openarm_vla.policies.openpi_pi0 import OpenPiAdapter
-
-        return "policy", OpenPiAdapter(checkpoint)
     raise SystemExit(f"unknown policy {name}")
 
 
@@ -48,7 +44,18 @@ def rollout(env, act):
     return inf, frames, grasped, min_d
 
 
-def run_policy(env, policy, chunk_horizon, replan_every):
+def smooth_chunk(actions, k: int):
+    """k-tap moving average along time, per joint. Ends use the edge sample, not zeros."""
+    if k <= 1:
+        return actions
+    pad = k // 2
+    x = np.pad(actions, ((pad, k - 1 - pad), (0, 0)), mode="edge")
+    kernel = np.ones(k) / k
+    cols = [np.convolve(x[:, j], kernel, mode="valid") for j in range(actions.shape[1])]
+    return np.stack(cols, 1).astype(np.float32)
+
+
+def run_policy(env, policy, chunk_horizon, replan_every, smooth: int = 0):
     buf = np.zeros((0, 8), np.float32)
     ptr = 0
 
@@ -56,6 +63,8 @@ def run_policy(env, policy, chunk_horizon, replan_every):
         nonlocal buf, ptr
         if ptr >= replan_every or ptr >= len(buf):
             buf = policy.predict_chunk(obs)
+            if smooth > 1:
+                buf = smooth_chunk(buf, smooth)
             ptr = 0
         ptr += 1
         return buf[min(ptr - 1, len(buf) - 1)]
@@ -78,6 +87,7 @@ def main():
     p.add_argument("--seeds-file", type=str, default=None, help="openarm_seeds.json from collect_demos; overrides --n-episodes/--seed")
     p.add_argument("--video-dir", type=str, default=None)
     p.add_argument("--save-all-videos", action="store_true", help="default: failures only")
+    p.add_argument("--smooth", type=int, default=0, help="eval-only k-tap moving average on each chunk; 0 is off")
     p.add_argument("--eval-config", default=str(REPO_ROOT / "configs" / "eval.yaml"))
     args = p.parse_args()
     cfg = load_yaml(args.eval_config)
@@ -98,7 +108,15 @@ def main():
     if args.seeds_file:
         file_rows = json.loads(Path(args.seeds_file).read_text(encoding="utf-8"))
         seeds = [r["seed"] for r in file_rows]
-        reset_opts = [{"instruction": r["instruction"]} for r in file_rows]
+        reset_opts = []
+        for r in file_rows:
+            opt = {"instruction": r["instruction"]}
+            # Collected seeds already store colors, but passing them skips rng draws and
+            # changes jitter. Only held-out rows set force_task.
+            if r.get("force_task"):
+                opt["ball_color"] = r["ball_color"]
+                opt["bin_color"] = r["bin_color"]
+            reset_opts.append(opt)
         n = len(seeds)
 
     counts = Counter()
@@ -110,7 +128,9 @@ def main():
         if kind == "expert":
             inf, frames, grasped, min_d = run_expert(env, expert)
         else:
-            inf, frames, grasped, min_d = run_policy(env, policy, int(cfg["chunk_horizon"]), int(cfg["replan_every"]))
+            inf, frames, grasped, min_d = run_policy(
+                env, policy, int(cfg["chunk_horizon"]), int(cfg["replan_every"]), smooth=args.smooth
+            )
         mode = inf.get("failure_mode", "unknown")
         counts[mode] += 1
         by_color[inf["task"]["ball_color"]][mode] += 1

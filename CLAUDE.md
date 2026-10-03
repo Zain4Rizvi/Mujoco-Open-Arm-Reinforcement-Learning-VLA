@@ -68,10 +68,6 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 # Project context
 
-Shared agent context lives in `.cursor/rules/` (Cursor loads these every session):
+Read `AGENTS.md` before editing the env, the expert, the policies, or the scripts. It has the constraints, the locked interface, and the commands.
 
-- `constraints.mdc` — always on. Disk, physics, arm, and the training gate.
-- `project.mdc` — env, locked interface, dataset keys, commands. Read before editing code.
-- `training.mdc` — Stage A result and what not to launch. Read before any collect, train, or eval.
-
-Update status in `training.mdc` only. `TRAINING_HANDOFF.md` is a pointer to that file. Expert design history stays in `AGENT_HANDOFF.md`.
+Experiment history is in `findings/`. Do not recreate status files, and do not relaunch those runs unless asked.

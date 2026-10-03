@@ -30,7 +30,7 @@ def read_stdin(cmds: queue.Queue):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--checkpoint", default=str(REPO_ROOT / "checkpoints/overfit10/checkpoints/002000/pretrained_model"))
+    p.add_argument("--checkpoint", default="lerobot/smolvla_base")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 

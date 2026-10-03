@@ -48,6 +48,7 @@ cell table. The "throw_ready" keyframe is a wind-up-adjacent start pose.
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
 
     <camera name="frontcam" pos="0.7 -1.4 1.0" xyaxes="1 0 0 0 0.4 1" fovy="55"/>
+    <camera name="headcam" pos="0.24 -0.30 1.25" xyaxes="1 0 0 0 1 0" fovy="60"/>
 
     <!-- bimanual arms mounted on the pedestal -->
     <attach model="arm_pedestal" prefix=""/>

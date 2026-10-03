@@ -49,6 +49,33 @@ def prune_training_state(out: Path):
         shutil.rmtree(c / "training_state", ignore_errors=True)
 
 
+def unfreeze_vision(policy):
+    """Train SigLIP only. `train_expert_only` freezes the whole VLM, so the vision flag never reaches it."""
+    vlm = policy.model.vlm_with_expert
+    vision = vlm.get_vlm_model().vision_model
+    for p in vision.parameters():
+        p.requires_grad = True
+    vlm.freeze_vision_encoder = False
+    policy.config.freeze_vision_encoder = False
+    orig = vlm.train
+
+    def train(mode=True):
+        orig(mode)
+        if mode:
+            vision.train()
+        return vlm
+
+    vlm.train = train
+    vision.gradient_checkpointing_enable()
+    vision_ids = {id(p) for p in vision.parameters()}
+    text = sum(p.numel() for p in vlm.vlm.parameters() if p.requires_grad and id(p) not in vision_ids)
+    if text:
+        raise RuntimeError(f"language model has {text} trainable parameters")
+    n = sum(p.numel() for p in vision.parameters())
+    print(f"vision encoder trainable: {n}", flush=True)
+    return policy
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", default=str(REPO_ROOT / "configs" / "train_smolvla.yaml"))
@@ -64,6 +91,9 @@ def main():
     p.add_argument("--min-steps", type=int, help="no early stop before this step")
     p.add_argument("--patience-evals", type=int, help="stop after this many validations without improvement")
     p.add_argument("--min-rel-improvement", type=float)
+    p.add_argument("--policy-path", help="local checkpoint; default is lerobot/smolvla_base")
+    p.add_argument("--train-vision", action="store_true",
+                   help="train the vision encoder; language model stays frozen")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
     cfg = load_yaml(args.config)
@@ -75,9 +105,14 @@ def main():
     out = Path(cfg["output_dir"])
     # lerobot wraps --policy.path in a Path, which turns "lerobot/smolvla_base" into "lerobot\smolvla_base" on
     # Windows and breaks the hub lookup; a local snapshot dir avoids that.
-    from huggingface_hub import snapshot_download
+    if args.policy_path:
+        base = args.policy_path
+    else:
+        from huggingface_hub import snapshot_download
 
-    base = snapshot_download("lerobot/smolvla_base")
+        base = snapshot_download("lerobot/smolvla_base")
+    if args.train_vision:
+        print("train_vision: vision encoder trainable, language model frozen", flush=True)
     argv = [
         "lerobot-train",
         f"--policy.path={base}",
@@ -111,11 +146,28 @@ def main():
     import numpy as np
     import torch
     import lerobot.scripts.lerobot_train as lt
+
+    if args.train_vision:
+        # foreach Adam builds a full-size temporary and OOMs a 6 GB card once the vision tower trains
+        _adamw = torch.optim.AdamW
+
+        def adamw_noforeach(*a, **k):
+            k["foreach"] = False
+            return _adamw(*a, **k)
+
+        torch.optim.AdamW = adamw_noforeach
     from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
     from lerobot.datasets.factory import resolve_delta_timestamps
 
     make = lt.make_policy
-    lt.make_policy = lambda *a, **k: make(*a, **k).float()  # GTX 16xx has no bf16 compute; the VLM loads as bf16
+
+    def make_policy_fp32(*a, **k):
+        policy = make(*a, **k).float()  # GTX 16xx has no bf16 compute; the VLM loads as bf16
+        if args.train_vision:
+            unfreeze_vision(policy)
+        return policy
+
+    lt.make_policy = make_policy_fp32
     lt.update_last_checkpoint = lambda d: d  # Path.symlink_to needs Windows Developer Mode
 
     procs = {}
